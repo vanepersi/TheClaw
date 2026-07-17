@@ -43,10 +43,9 @@ teleport-on-end: true
 clear-items-on-end: true
 
 # ---------------------------------------------------------------------------
-# Custom models / textures
-# Works with vanilla item models, ItemsAdder, ModelEngine resource packs, etc.
-# Set item-model to a namespaced key from your pack, e.g. "genesicore:prize_duck"
-# Leave blank to use only material + custom-model-data.
+# Display entities (ItemDisplay) — never armor stands
+# Prizes and the claw arm are spawned as ItemDisplay entities so custom
+# models/textures render cleanly with ItemsAdder / ModelEngine / item-model.
 # ---------------------------------------------------------------------------
 prize:
   material: PLAYER_HEAD
@@ -56,6 +55,24 @@ prize:
   itemsadder-id: ""
   scale: 1.0
   y-offset: 0.0
+  # ItemDisplay transform: NONE, THIRDPERSON_LEFTHAND, THIRDPERSON_RIGHTHAND,
+  # FIRSTPERSON_LEFTHAND, FIRSTPERSON_RIGHTHAND, HEAD, GUI, GROUND, FIXED
+  display-transform: FIXED
+
+# Visual claw arm riding the claw player (ItemDisplay). Set enabled: false to hide.
+claw-visual:
+  enabled: true
+  material: IRON_BARS
+  item-model: ""
+  custom-model-data: 0
+  display-name: "&7Claw"
+  itemsadder-id: ""
+  scale: 1.35
+  # Local offset while riding the claw player
+  offset-x: 0.0
+  offset-y: 0.35
+  offset-z: 0.0
+  display-transform: FIXED
 
 controls:
   move-north:

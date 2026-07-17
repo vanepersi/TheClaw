@@ -68,6 +68,10 @@ public final class ItemFactory {
         return stack;
     }
 
+    public ItemStack createClawVisualItem() {
+        return createConfiguredItem("claw-visual");
+    }
+
     public ItemStack createGrabItem() {
         ItemStack stack = createConfiguredItem("grab");
         ItemMeta meta = stack.getItemMeta();

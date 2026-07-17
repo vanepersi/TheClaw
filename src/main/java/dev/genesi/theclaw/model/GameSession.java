@@ -26,6 +26,7 @@ public final class GameSession {
     private String clawName;
     private State state = State.WAITING;
     private final List<ItemDisplay> prizeDisplays = new ArrayList<>();
+    private ItemDisplay clawVisual;
     private final List<Boolean> collected;
     private int remainingSeconds;
     private int prizePoints;
@@ -142,6 +143,14 @@ public final class GameSession {
 
     public List<ItemDisplay> getPrizeDisplays() {
         return prizeDisplays;
+    }
+
+    public ItemDisplay getClawVisual() {
+        return clawVisual;
+    }
+
+    public void setClawVisual(ItemDisplay clawVisual) {
+        this.clawVisual = clawVisual;
     }
 
     public boolean isCollected(int index) {

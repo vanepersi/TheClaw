@@ -196,6 +196,7 @@ public final class GameManager {
         }
 
         spawnPrizes(session, arena.getPrizes());
+        spawnClawVisual(session, claw);
         giveOperatorControls(operator);
         giveClawGrab(claw);
 
@@ -409,12 +410,13 @@ public final class GameManager {
         if (index != null && index >= 0 && index < session.getPrizeDisplays().size()) {
             ItemDisplay display = session.getPrizeDisplays().get(index);
             if (display != null && !display.isDead()) {
+                detachDisplay(claw, display);
                 Location dropAt = claw.getLocation().clone().add(0, -0.4, 0);
                 BoundingBox bounds = arena.getBounds();
                 if (bounds != null) {
                     dropAt.setY(Math.max(bounds.getMinY() + 0.2, dropAt.getY()));
                 }
-                display.teleport(dropAt);
+                moveDisplay(display, dropAt);
             }
         }
         claw.playSound(claw.getLocation(), Sound.ENTITY_ITEM_PICKUP, 0.6f, 0.5f);
@@ -443,6 +445,7 @@ public final class GameManager {
 
         ItemDisplay display = index < session.getPrizeDisplays().size() ? session.getPrizeDisplays().get(index) : null;
         if (display != null && !display.isDead()) {
+            detachDisplay(claw, display);
             display.remove();
         }
 
@@ -481,8 +484,81 @@ public final class GameManager {
         if (display == null || display.isDead()) {
             return;
         }
-        Location attach = claw.getLocation().clone().add(0, -0.55, 0);
-        display.teleport(attach);
+        // Ride the claw player as a passenger ItemDisplay — no armor stands.
+        if (!claw.getPassengers().contains(display)) {
+            attachDisplay(claw, display, 0.0, -0.55, 0.0);
+        }
+        syncClawVisual(session, claw);
+    }
+
+    private void syncClawVisual(GameSession session, Player claw) {
+        ItemDisplay visual = session.getClawVisual();
+        if (visual == null || visual.isDead()) {
+            return;
+        }
+        if (!claw.getPassengers().contains(visual)) {
+            double ox = plugin.getConfig().getDouble("claw-visual.offset-x", 0.0);
+            double oy = plugin.getConfig().getDouble("claw-visual.offset-y", 0.35);
+            double oz = plugin.getConfig().getDouble("claw-visual.offset-z", 0.0);
+            attachDisplay(claw, visual, ox, oy, oz);
+        }
+    }
+
+    private void attachDisplay(Player carrier, ItemDisplay display, double ox, double oy, double oz) {
+        if (display == null || display.isDead() || carrier == null) {
+            return;
+        }
+        try {
+            applyTranslation(display, ox, oy, oz);
+            if (!carrier.addPassenger(display)) {
+                moveDisplay(display, carrier.getLocation().clone().add(ox, oy, oz));
+            }
+        } catch (Exception ex) {
+            moveDisplay(display, carrier.getLocation().clone().add(ox, oy, oz));
+        }
+    }
+
+    private void detachDisplay(Player carrier, ItemDisplay display) {
+        if (display == null || display.isDead()) {
+            return;
+        }
+        try {
+            if (carrier != null) {
+                carrier.removePassenger(display);
+            }
+            if (display.isInsideVehicle()) {
+                display.leaveVehicle();
+            }
+        } catch (Exception ignored) {
+            // Fall through — display may already be detached.
+        }
+        applyTranslation(display, 0, 0, 0);
+    }
+
+    private void moveDisplay(ItemDisplay display, Location location) {
+        if (display == null || display.isDead() || location == null) {
+            return;
+        }
+        try {
+            display.setTeleportDuration(1);
+        } catch (Exception ignored) {
+            // Older/mocked APIs may not support teleport duration.
+        }
+        display.teleport(location);
+    }
+
+    private void applyTranslation(ItemDisplay display, double x, double y, double z) {
+        try {
+            Transformation current = display.getTransformation();
+            display.setTransformation(new Transformation(
+                    new Vector3f((float) x, (float) y, (float) z),
+                    current.getLeftRotation(),
+                    current.getScale(),
+                    current.getRightRotation()
+            ));
+        } catch (Exception ignored) {
+            // Mock or limited Display API.
+        }
     }
 
     private boolean isLowered(GameSession session, Player claw) {
@@ -552,6 +628,8 @@ public final class GameManager {
         if (session.isHolding()) {
             syncHeldPrize(session, claw);
             plugin.getArenaManager().get(session.getArenaName()).ifPresent(arena -> tryDrop(session, claw, arena));
+        } else {
+            syncClawVisual(session, claw);
         }
 
         session.decrementSecond();
@@ -572,14 +650,28 @@ public final class GameManager {
             session.getTickTask().cancel();
         }
 
+        Player operator = session.getOperatorId() == null ? null : Bukkit.getPlayer(session.getOperatorId());
+        Player claw = session.getClawId() == null ? null : Bukkit.getPlayer(session.getClawId());
+
         for (ItemDisplay display : session.getPrizeDisplays()) {
             if (display != null && !display.isDead()) {
+                if (operator != null) {
+                    detachDisplay(operator, display);
+                }
+                if (claw != null) {
+                    detachDisplay(claw, display);
+                }
                 display.remove();
             }
         }
-
-        Player operator = session.getOperatorId() == null ? null : Bukkit.getPlayer(session.getOperatorId());
-        Player claw = session.getClawId() == null ? null : Bukkit.getPlayer(session.getClawId());
+        ItemDisplay clawVisual = session.getClawVisual();
+        if (clawVisual != null && !clawVisual.isDead()) {
+            if (claw != null) {
+                detachDisplay(claw, clawVisual);
+            }
+            clawVisual.remove();
+        }
+        session.setClawVisual(null);
 
         int points = session.getPointsEarned();
         if (cleared) {
@@ -704,6 +796,7 @@ public final class GameManager {
         float scale = (float) plugin.getConfig().getDouble("prize.scale", 1.0);
         double yOffset = plugin.getConfig().getDouble("prize.y-offset", 0.0);
         ItemStack item = plugin.getItemFactory().createPrizeItem();
+        String transformName = plugin.getConfig().getString("prize.display-transform", "FIXED");
 
         for (int i = 0; i < locations.size(); i++) {
             Location base = locations.get(i);
@@ -714,16 +807,35 @@ public final class GameManager {
             Location spawnAt = base.clone().add(0, yOffset, 0);
             final int index = i;
             ItemDisplay display = spawnAt.getWorld().spawn(spawnAt, ItemDisplay.class, entity -> {
-                configurePrizeDisplay(entity, item, scale, index);
+                configureItemDisplay(entity, item, scale, transformName, index);
             });
             session.getPrizeDisplays().add(display);
         }
+    }
+
+    private void spawnClawVisual(GameSession session, Player claw) {
+        if (!plugin.getConfig().getBoolean("claw-visual.enabled", true)) {
+            return;
+        }
+        if (claw == null || claw.getWorld() == null) {
+            return;
+        }
+        float scale = (float) plugin.getConfig().getDouble("claw-visual.scale", 1.35);
+        String transformName = plugin.getConfig().getString("claw-visual.display-transform", "FIXED");
+        ItemStack item = plugin.getItemFactory().createClawVisualItem();
+        Location at = claw.getLocation().clone();
+        ItemDisplay visual = at.getWorld().spawn(at, ItemDisplay.class, entity -> {
+            configureItemDisplay(entity, item, scale, transformName, null);
+        });
+        session.setClawVisual(visual);
+        syncClawVisual(session, claw);
     }
 
     private List<ItemDisplay> spawnDisplays(List<Location> locations, boolean preview) {
         float scale = (float) plugin.getConfig().getDouble("prize.scale", 1.0);
         double yOffset = plugin.getConfig().getDouble("prize.y-offset", 0.0);
         ItemStack item = plugin.getItemFactory().createPrizeItem();
+        String transformName = plugin.getConfig().getString("prize.display-transform", "FIXED");
         java.util.ArrayList<ItemDisplay> spawned = new java.util.ArrayList<>();
 
         for (int i = 0; i < locations.size(); i++) {
@@ -734,19 +846,28 @@ public final class GameManager {
             Location spawnAt = base.clone().add(0, yOffset, 0);
             final int index = i;
             ItemDisplay display = spawnAt.getWorld().spawn(spawnAt, ItemDisplay.class, entity -> {
-                configurePrizeDisplay(entity, item, scale, preview ? index : null);
+                configureItemDisplay(entity, item, scale, transformName, preview ? index : null);
             });
             spawned.add(display);
         }
         return spawned;
     }
 
-    private void configurePrizeDisplay(ItemDisplay entity, ItemStack item, float scale, Integer index) {
+    private void configureItemDisplay(ItemDisplay entity, ItemStack item, float scale, String transformName, Integer index) {
         entity.setItemStack(item.clone());
         try {
             entity.setBillboard(Display.Billboard.FIXED);
         } catch (Exception ignored) {
             // Some test mocks do not implement Display billboards yet.
+        }
+        try {
+            ItemDisplay.ItemDisplayTransform transform = ItemDisplay.ItemDisplayTransform.FIXED;
+            if (transformName != null && !transformName.isBlank()) {
+                transform = ItemDisplay.ItemDisplayTransform.valueOf(transformName.trim().toUpperCase());
+            }
+            entity.setItemDisplayTransform(transform);
+        } catch (Exception ignored) {
+            // Invalid transform name or unimplemented mock API.
         }
         try {
             entity.setTransformation(new Transformation(
@@ -758,8 +879,17 @@ public final class GameManager {
         } catch (Exception ignored) {
             // Some test mocks do not implement Display transformations yet.
         }
+        try {
+            entity.setShadowRadius(0f);
+            entity.setShadowStrength(0f);
+            entity.setViewRange(1.0f);
+            entity.setTeleportDuration(1);
+        } catch (Exception ignored) {
+            // Optional Display knobs.
+        }
         entity.setPersistent(false);
         entity.setInvulnerable(true);
+        entity.setGravity(false);
         if (index != null) {
             entity.getPersistentDataContainer().set(plugin.getItemFactory().getPrizeKey(), PersistentDataType.INTEGER, index);
         }

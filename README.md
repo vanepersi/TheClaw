@@ -2,6 +2,8 @@
 
 Two-player claw machine arcade plugin for Paper **26.1.2**.
 
+Prizes and the claw arm are **ItemDisplay** entities (never armor stands), so custom models/textures from ItemsAdder / ModelEngine / `item-model` render cleanly.
+
 One player is the **joystick operator** (moves the claw with hotbar controls). The other is the **claw** behind the glass (presses Grab to clamp onto prizes). The operator must guide a held prize to the drop chute — and just like a real machine, grabs often slip.
 
 ## Play
