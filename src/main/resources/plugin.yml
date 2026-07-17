@@ -1,0 +1,32 @@
+name: TheClaw
+version: '${version}'
+main: dev.genesi.theclaw.TheClawPlugin
+api-version: '26.1'
+authors: [Genesi]
+description: Two-player claw machine arcade — one drives the joystick, the other is the claw.
+softdepend: [Vault, ItemsAdder, ModelEngine]
+
+commands:
+  claw:
+    description: Join or leave a TheClaw arcade game.
+    usage: /claw <join|leave|role|points|arenas|info|help>
+    aliases: [theclaw, clawmachine]
+  clawadmin:
+    description: Admin setup and control for TheClaw arenas.
+    usage: /clawadmin <subcommand>
+    aliases: [theclawadmin, ca]
+    permission: theclaw.admin
+
+permissions:
+  theclaw.use:
+    description: Join and play TheClaw arenas.
+    default: true
+  theclaw.points:
+    description: View your arcade points balance.
+    default: true
+  theclaw.admin:
+    description: Manage arenas, force games, and redeem points.
+    default: op
+  theclaw.bypass.fee:
+    description: Join without paying the entry fee.
+    default: false
