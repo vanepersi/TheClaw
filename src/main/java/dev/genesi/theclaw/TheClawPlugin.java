@@ -11,7 +11,7 @@ import dev.genesi.theclaw.manager.PointsService;
 import dev.genesi.theclaw.util.ItemFactory;
 import org.bukkit.plugin.java.JavaPlugin;
 
-public final class TheClawPlugin extends JavaPlugin {
+public class TheClawPlugin extends JavaPlugin {
 
     private ArenaManager arenaManager;
     private GameManager gameManager;

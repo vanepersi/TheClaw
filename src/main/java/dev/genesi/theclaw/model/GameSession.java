@@ -5,7 +5,10 @@ import org.bukkit.entity.Player;
 import org.bukkit.scheduler.BukkitTask;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 
 public final class GameSession {
@@ -33,6 +36,7 @@ public final class GameSession {
     private double raisedY;
     private BukkitTask tickTask;
     private boolean finished;
+    private final Map<UUID, Double> feesPaid = new HashMap<>();
 
     public GameSession(String arenaName, int prizeCount, int durationSeconds, int prizePoints, int clearBonusPoints) {
         this.arenaName = arenaName;
@@ -43,6 +47,21 @@ public final class GameSession {
         for (int i = 0; i < prizeCount; i++) {
             collected.add(false);
         }
+    }
+
+    public void recordFeePaid(UUID uuid, double amount) {
+        if (uuid == null || amount <= 0) {
+            return;
+        }
+        feesPaid.merge(uuid, amount, Double::sum);
+    }
+
+    public double takeFeePaid(UUID uuid) {
+        if (uuid == null) {
+            return 0;
+        }
+        Double amount = feesPaid.remove(uuid);
+        return amount == null ? 0 : amount;
     }
 
     public String getArenaName() {
@@ -76,15 +95,15 @@ public final class GameSession {
     }
 
     public boolean isPlayer(UUID uuid) {
-        return uuid.equals(operatorId) || uuid.equals(clawId);
+        return Objects.equals(uuid, operatorId) || Objects.equals(uuid, clawId);
     }
 
     public boolean isOperator(UUID uuid) {
-        return uuid.equals(operatorId);
+        return Objects.equals(uuid, operatorId);
     }
 
     public boolean isClaw(UUID uuid) {
-        return uuid.equals(clawId);
+        return Objects.equals(uuid, clawId);
     }
 
     public boolean isFull() {
@@ -103,11 +122,11 @@ public final class GameSession {
     }
 
     public void clearPlayer(UUID uuid) {
-        if (uuid.equals(operatorId)) {
+        if (Objects.equals(uuid, operatorId)) {
             operatorId = null;
             operatorName = null;
         }
-        if (uuid.equals(clawId)) {
+        if (Objects.equals(uuid, clawId)) {
             clawId = null;
             clawName = null;
         }
