@@ -104,7 +104,7 @@ public final class GameManager {
         if (existing.getOperatorId() == null) {
             existing.setOperator(player);
             byPlayer.put(player.getUniqueId(), existing);
-            plugin.getMessageService().send(player, "machine-needs-claw");
+            plugin.getMessageService().sendPlain(player, "machine-needs-claw");
             scoreboards.show(player, existing, true);
             return "ok-waiting";
         }
@@ -133,13 +133,14 @@ public final class GameManager {
         Location clawSpawn = arena.getClawSpawn();
         if (clawSpawn != null) {
             claw.teleport(clawSpawn);
-            session.lockClawLook(clawSpawn.getYaw(), clawSpawn.getPitch());
-        } else {
-            session.lockClawLook(claw.getLocation().getYaw(), claw.getLocation().getPitch());
         }
+        // Face straight up so they cannot see the prize pit.
+        float yaw = clawSpawn != null ? clawSpawn.getYaw() : claw.getLocation().getYaw();
+        session.lockClawLook(yaw, -90f);
 
         animateClawScaleIn(session, claw);
         applyClawEffects(claw);
+        keepClawFloating(claw);
         spawnClawVisual(session, claw);
 
         scoreboards.show(operator, session, true);
@@ -191,6 +192,7 @@ public final class GameManager {
         }
 
         lockClawLook(session, claw);
+        keepClawFloating(claw);
         keepClawInBounds(session, claw, arena);
         syncClawVisual(session, claw);
         if (session.isHolding()) {
@@ -202,6 +204,10 @@ public final class GameManager {
             tickGuiding(session, operator, claw, arena);
         } else if (session.getState() == GameSession.State.SYNC) {
             tickSync(session, operator, claw, arena);
+            // Keep the number on screen longer by refreshing the title.
+            if (session.getSyncNumber() != null && Bukkit.getCurrentTick() % 15 == 0) {
+                refreshSyncTitle(session, operator, claw);
+            }
         }
 
         if (Bukkit.getCurrentTick() % 20 == 0) {
@@ -347,16 +353,27 @@ public final class GameManager {
         int ticks = plugin.getConfig().getInt("sync-window-ticks", 60);
         session.beginSync(number, ticks);
 
+        refreshSyncTitle(session, operator, claw);
+        operator.playSound(operator.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.0f);
+        claw.playSound(claw.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.0f);
+    }
+
+    private void refreshSyncTitle(GameSession session, Player operator, Player claw) {
+        Integer number = session.getSyncNumber();
+        if (number == null) {
+            return;
+        }
         String main = plugin.getMessageService().apply(
                 plugin.getConfig().getString("messages.sync-title", "&ePRESS &f{number}&e!"),
                 Map.of("number", String.valueOf(number))
         );
-        String sub = plugin.getConfig().getString("messages.sync-subtitle", "&7Both players — hotbar key {number}");
-        sub = plugin.getMessageService().apply(sub, Map.of("number", String.valueOf(number)));
-        showTitle(operator, main, sub);
-        showTitle(claw, main, sub);
-        operator.playSound(operator.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.0f);
-        claw.playSound(claw.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.0f);
+        String sub = plugin.getMessageService().apply(
+                plugin.getConfig().getString("messages.sync-subtitle", "&7Both players — press hotbar &f{number}"),
+                Map.of("number", String.valueOf(number))
+        );
+        long stayMs = plugin.getConfig().getLong("sync-title-stay-millis", 3500L);
+        showTitle(operator, main, sub, stayMs);
+        showTitle(claw, main, sub, stayMs);
     }
 
     private void tickSync(GameSession session, Player operator, Player claw, Arena arena) {
@@ -404,14 +421,13 @@ public final class GameManager {
         }
         session.clearSync();
 
-        // Correct + fast sync = claw FAILS (you lose the grab) — rigged like a real machine.
-        // Missed / too slow sync = claw miraculously grabs.
-        boolean grabSuccess = !bothPressed;
+        // Correct + fast sync = claw FAILS (you lose) — rigged like a real machine.
+        boolean canGrab = !bothPressed;
         if (plugin.getConfig().getBoolean("sync-success-means-grab", false)) {
-            grabSuccess = bothPressed;
+            canGrab = bothPressed;
         }
 
-        if (!grabSuccess) {
+        if (!canGrab) {
             plugin.getMessageService().send(operator, "sync-lose");
             plugin.getMessageService().send(claw, "sync-lose");
             showTitle(operator, "&cSLIP!", "&7The claw failed...");
@@ -421,13 +437,37 @@ public final class GameManager {
             return;
         }
 
-        double radius = plugin.getConfig().getDouble("grab-radius", 1.35);
-        Optional<ItemDisplay> nearby = findNearbyPrize(session, claw.getLocation(), radius);
+        // Sync passed — claw must shift-click a nearby prize to pick it up.
+        plugin.getMessageService().send(operator, "sync-ok-grab");
+        plugin.getMessageService().send(claw, "sync-ok-grab-claw");
+        showTitle(operator, "&aNOW!", "&7Guide them onto a prize");
+        showTitle(claw, "&aSHIFT + CLICK!", "&7Pick up a prize");
+        session.setState(GameSession.State.GUIDING);
+        session.setRemainingSeconds(plugin.getConfig().getInt("deliver-seconds", 25));
+    }
+
+    public boolean handleClawShiftClick(Player clawPlayer) {
+        GameSession session = byPlayer.get(clawPlayer.getUniqueId());
+        if (session == null || session.isFinished()) {
+            return false;
+        }
+        if (!session.isClaw(clawPlayer.getUniqueId())) {
+            return false;
+        }
+        if (session.getState() != GameSession.State.GUIDING) {
+            return false;
+        }
+        if (session.isHolding()) {
+            plugin.getMessageService().send(clawPlayer, "already-holding");
+            return true;
+        }
+
+        double radius = plugin.getConfig().getDouble("grab-radius", 1.75);
+        Optional<ItemDisplay> nearby = findNearbyPrize(session, clawPlayer.getLocation(), radius);
         if (nearby.isEmpty()) {
-            plugin.getMessageService().send(operator, "grab-empty");
-            plugin.getMessageService().send(claw, "grab-empty");
-            endSession(session, false, "round-over-miss", null);
-            return;
+            plugin.getMessageService().send(clawPlayer, "grab-too-far");
+            clawPlayer.playSound(clawPlayer.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 0.7f, 0.6f);
+            return true;
         }
 
         ItemDisplay display = nearby.get();
@@ -436,43 +476,60 @@ public final class GameManager {
                 org.bukkit.persistence.PersistentDataType.INTEGER
         );
         if (index == null || session.isCollected(index)) {
-            endSession(session, false, "round-over-miss", null);
-            return;
+            plugin.getMessageService().send(clawPlayer, "grab-too-far");
+            return true;
         }
 
         session.setHeldPrizeIndex(index);
-        syncHeldPrize(session, claw);
-        plugin.getMessageService().send(operator, "prize-grabbed");
-        plugin.getMessageService().send(claw, "prize-grabbed");
-        showTitle(operator, "&aGOT IT!", "&7Guide them to the drop");
-        showTitle(claw, "&aHOLDING!", "&7Follow signals to the opening");
-        session.setState(GameSession.State.GUIDING);
-        session.setRemainingSeconds(plugin.getConfig().getInt("deliver-seconds", 25));
+        syncHeldPrize(session, clawPlayer);
+        Player operator = Bukkit.getPlayer(session.getOperatorId());
+        plugin.getMessageService().send(clawPlayer, "prize-grabbed");
+        if (operator != null) {
+            plugin.getMessageService().send(operator, "prize-grabbed");
+        }
+        showTitle(clawPlayer, "&aHOLDING!", "&7Get to the drop opening");
+        if (operator != null) {
+            showTitle(operator, "&aHOLDING!", "&7Guide them to the drop");
+        }
+        clawPlayer.playSound(clawPlayer.getLocation(), Sound.BLOCK_METAL_HIT, 1.0f, 1.3f);
+        return true;
     }
 
     private void tryDeliverPrize(GameSession session, Player claw, Arena arena) {
         if (!session.isHolding()) {
             return;
         }
-        Location chute = arena.getDropChute();
-        if (chute == null || chute.getWorld() == null) {
+        Integer index = session.getHeldPrizeIndex();
+        if (index == null || index < 0 || index >= session.getPrizeDisplays().size()) {
+            session.setHeldPrizeIndex(null);
             return;
         }
-        double dropRadius = plugin.getConfig().getDouble("drop-radius", 1.4);
-        if (claw.getLocation().distanceSquared(chute) > dropRadius * dropRadius) {
+        ItemDisplay display = session.getPrizeDisplays().get(index);
+        if (display == null || display.isDead()) {
+            session.setHeldPrizeIndex(null);
             return;
         }
 
-        Integer index = session.getHeldPrizeIndex();
-        session.setHeldPrizeIndex(null);
-        if (index == null || !session.markCollected(index)) {
+        Location chute = arena.getDropChute();
+        if (chute == null || chute.getWorld() == null || !claw.getWorld().equals(chute.getWorld())) {
             return;
         }
-        ItemDisplay display = index < session.getPrizeDisplays().size() ? session.getPrizeDisplays().get(index) : null;
-        if (display != null && !display.isDead()) {
-            detachDisplay(claw, display);
-            display.remove();
+
+        // Must be on the drop chute block itself — not just "nearby".
+        Location feet = claw.getLocation();
+        if (feet.getBlockX() != chute.getBlockX()
+                || feet.getBlockZ() != chute.getBlockZ()
+                || Math.abs(feet.getBlockY() - chute.getBlockY()) > 1) {
+            return;
         }
+
+        session.setHeldPrizeIndex(null);
+        if (!session.markCollected(index)) {
+            return;
+        }
+        detachDisplay(claw, display);
+        display.remove();
+
         int points = session.getPrizePoints();
         session.addPointsEarned(points);
         Player operator = Bukkit.getPlayer(session.getOperatorId());
@@ -485,6 +542,9 @@ public final class GameManager {
         if (operator != null) {
             plugin.getMessageService().send(operator, "prize-dropped", placeholders);
         }
+        claw.getWorld().spawnParticle(Particle.HAPPY_VILLAGER, chute.clone().add(0.5, 0.5, 0.5), 18, 0.25, 0.25, 0.25, 0.02);
+        claw.playSound(claw.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.8f, 1.4f);
+
         if (session.allCollected()) {
             endSession(session, true, "win-clear", null);
         } else {
@@ -641,8 +701,10 @@ public final class GameManager {
         }
         scoreboards.clear(player);
         player.removePotionEffect(PotionEffectType.BLINDNESS);
+        player.removePotionEffect(PotionEffectType.DARKNESS);
         if (wasClaw) {
             restoreScale(player, session.getOriginalClawScale());
+            player.setGravity(true);
         }
         player.setWalkSpeed(0.2f);
         player.setFlySpeed(0.1f);
@@ -660,7 +722,7 @@ public final class GameManager {
             return;
         }
         session.setOriginalClawScale(scale.getBaseValue());
-        double target = plugin.getConfig().getDouble("claw-scale", 0.55);
+        double target = plugin.getConfig().getDouble("claw-scale", 0.22);
         scale.setBaseValue(target);
         claw.getWorld().spawnParticle(Particle.CLOUD, claw.getLocation().add(0, 1, 0), 20, 0.4, 0.6, 0.4, 0.02);
         claw.playSound(claw.getLocation(), Sound.ENTITY_ILLUSIONER_CAST_SPELL, 0.8f, 1.2f);
@@ -676,17 +738,30 @@ public final class GameManager {
     private void applyClawEffects(Player claw) {
         claw.setGameMode(GameMode.ADVENTURE);
         claw.addPotionEffect(new PotionEffect(PotionEffectType.BLINDNESS, PotionEffect.INFINITE_DURATION, 1, false, false, true));
-        claw.setWalkSpeed((float) plugin.getConfig().getDouble("claw-walk-speed", 0.16));
+        claw.addPotionEffect(new PotionEffect(PotionEffectType.DARKNESS, PotionEffect.INFINITE_DURATION, 0, false, false, true));
+        claw.setWalkSpeed((float) plugin.getConfig().getDouble("claw-walk-speed", 0.14));
+        claw.setFlySpeed((float) plugin.getConfig().getDouble("claw-fly-speed", 0.06));
+        keepClawFloating(claw);
+    }
+
+    private void keepClawFloating(Player claw) {
+        if (claw == null) {
+            return;
+        }
+        claw.setAllowFlight(true);
+        claw.setFlying(true);
+        claw.setGravity(false);
     }
 
     private void lockClawLook(GameSession session, Player claw) {
         Location loc = claw.getLocation();
-        if (Math.abs(loc.getYaw() - session.getClawLockedYaw()) < 0.05
-                && Math.abs(loc.getPitch() - session.getClawLockedPitch()) < 0.05) {
+        float yaw = session.getClawLockedYaw();
+        float pitch = -90f; // permanently face straight up
+        if (Math.abs(loc.getYaw() - yaw) < 0.05 && Math.abs(loc.getPitch() - pitch) < 0.05) {
             return;
         }
-        loc.setYaw(session.getClawLockedYaw());
-        loc.setPitch(session.getClawLockedPitch());
+        loc.setYaw(yaw);
+        loc.setPitch(pitch);
         claw.teleport(loc);
     }
 
@@ -705,7 +780,7 @@ public final class GameManager {
             next.setY(y);
             next.setZ(z);
             next.setYaw(session.getClawLockedYaw());
-            next.setPitch(session.getClawLockedPitch());
+            next.setPitch(-90f);
             claw.teleport(next);
         }
     }
@@ -722,10 +797,18 @@ public final class GameManager {
     }
 
     private void showTitle(Player player, String main, String sub) {
+        showTitle(player, main, sub, 1200L);
+    }
+
+    private void showTitle(Player player, String main, String sub, long stayMillis) {
         Title title = Title.title(
                 LegacyComponentSerializer.legacyAmpersand().deserialize(main == null ? "" : main),
                 LegacyComponentSerializer.legacyAmpersand().deserialize(sub == null ? "" : sub),
-                Title.Times.times(Duration.ofMillis(100), Duration.ofMillis(1200), Duration.ofMillis(200))
+                Title.Times.times(
+                        Duration.ofMillis(100),
+                        Duration.ofMillis(Math.max(500L, stayMillis)),
+                        Duration.ofMillis(250)
+                )
         );
         player.showTitle(title);
     }

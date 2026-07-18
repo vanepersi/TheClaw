@@ -33,10 +33,31 @@ public final class GameListener implements Listener {
         if (event.getHand() != EquipmentSlot.HAND) {
             return;
         }
-        if (event.getAction() != Action.RIGHT_CLICK_BLOCK && event.getAction() != Action.LEFT_CLICK_BLOCK) {
+        Action action = event.getAction();
+        if (action != Action.RIGHT_CLICK_BLOCK && action != Action.LEFT_CLICK_BLOCK
+                && action != Action.RIGHT_CLICK_AIR && action != Action.LEFT_CLICK_AIR) {
             return;
         }
+
+        Player player = event.getPlayer();
+
+        // Claw shift-click to grab a prize (air or block).
+        Optional<GameSession> sessionOpt = plugin.getGameManager().getByPlayer(player.getUniqueId());
+        if (sessionOpt.isPresent()
+                && sessionOpt.get().isClaw(player.getUniqueId())
+                && player.isSneaking()
+                && (action == Action.RIGHT_CLICK_AIR || action == Action.RIGHT_CLICK_BLOCK
+                || action == Action.LEFT_CLICK_AIR || action == Action.LEFT_CLICK_BLOCK)) {
+            if (plugin.getGameManager().handleClawShiftClick(player)) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+
         if (event.getClickedBlock() == null) {
+            return;
+        }
+        if (action != Action.RIGHT_CLICK_BLOCK && action != Action.LEFT_CLICK_BLOCK) {
             return;
         }
 
@@ -46,7 +67,6 @@ public final class GameListener implements Listener {
         }
 
         event.setCancelled(true);
-        Player player = event.getPlayer();
         String result = plugin.getGameManager().clickMachine(player, arena.get());
         switch (result) {
             case "already-playing" -> plugin.getMessageService().send(player, "already-playing");
@@ -69,11 +89,11 @@ public final class GameListener implements Listener {
             return;
         }
 
-        // Freeze claw head look — position movement allowed.
+        // Freeze claw look straight up — horizontal movement still allowed.
         if (session.isClaw(player.getUniqueId()) && event.getTo() != null) {
             Location to = event.getTo().clone();
             to.setYaw(session.getClawLockedYaw());
-            to.setPitch(session.getClawLockedPitch());
+            to.setPitch(-90f);
             event.setTo(to);
         }
 

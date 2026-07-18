@@ -30,6 +30,12 @@ public final class MessageService {
         sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(prefix + apply(raw, placeholders)));
     }
 
+    /** Sends a config message with no plugin prefix (exact wording). */
+    public void sendPlain(CommandSender sender, String key) {
+        String raw = plugin.getConfig().getString("messages." + key, key);
+        sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(apply(raw, Map.of())));
+    }
+
     public void sendRaw(CommandSender sender, String message) {
         sender.sendMessage(LegacyComponentSerializer.legacyAmpersand().deserialize(prefix + message));
     }

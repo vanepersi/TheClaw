@@ -105,10 +105,9 @@ public final class ScoreboardService {
 
     private List<String> defaultOperator() {
         return List.of(
-                "&7Role: &aOperator",
-                "&7Stand on the &epad",
-                "&7WASD / scroll = signal",
-                "&7Guide the blind claw!",
+                "&fYou are the &aOperator",
+                "&7Stand on the control pad",
+                "&7WASD/scroll = send signals",
                 "&7Time: &e{time}s",
                 "&7Pad: &f{pad}"
         );
@@ -116,10 +115,9 @@ public final class ScoreboardService {
 
     private List<String> defaultClaw() {
         return List.of(
-                "&7Role: &bHuman Claw",
-                "&7You are &8BLIND",
-                "&7Follow title signals",
-                "&7Walk only — no looking",
+                "&fYou are the &bHuman Claw",
+                "&7Look locked up — follow titles",
+                "&7Shift+Click = grab prize",
                 "&7Time: &e{time}s",
                 "&7Last: &f{signal}"
         );

@@ -26,18 +26,21 @@ signal-cooldown-millis: 350
 drop-windup-ticks: 30
 
 # How long both players have to press the hotbar number (ticks)
-sync-window-ticks: 60
+sync-window-ticks: 80
+
+# How long the PRESS number title stays visible (milliseconds)
+sync-title-stay-millis: 4000
 
 # false = pressing correctly+fast makes the claw FAIL (real-machine feel / "you lose")
-# true  = pressing correctly+fast makes the grab succeed
+# true  = pressing correctly+fast lets the claw try to grab
 sync-success-means-grab: false
 
-grab-radius: 1.35
-drop-radius: 1.4
+grab-radius: 2.0
 
-# Scale applied to the human claw player (Attribute.SCALE)
-claw-scale: 0.55
-claw-walk-speed: 0.16
+# Scale applied to the human claw player (Attribute.SCALE) — smaller = tinier claw
+claw-scale: 0.22
+claw-walk-speed: 0.14
+claw-fly-speed: 0.06
 
 # ---------------------------------------------------------------------------
 # Display entities (ItemDisplay) — never armor stands
@@ -80,21 +83,24 @@ reward:
 scoreboard:
   title: "&d&lTheClaw"
   operator:
-    - "&7Role: &aOperator"
-    - "&7Stand on the &epad"
-    - "&7WASD = signal claw"
-    - "&7Scroll = signal too"
-    - "&7Shift+scroll = L/R"
-    - "&7Time: &e{time}s"
+    - "&fYou are the &aOperator"
+    - "&7Stand on the &egold control pad"
+    - "&7Use &fWASD &7or &fscroll"
+    - "&7to send move signals"
+    - "&7Stay near the machine!"
+    - "&8---------------"
+    - "&7Time left: &e{time}s"
     - "&7Pad: &f{pad}"
     - "&7Prizes: &f{prizes}/{total}"
   claw:
-    - "&7Role: &bHuman Claw"
-    - "&7You are &8BLIND"
-    - "&7Read title signals"
-    - "&7Walk only — look locked"
-    - "&7Time: &e{time}s"
-    - "&7Last: &f{signal}"
+    - "&fYou are the &bHuman Claw"
+    - "&7You can't see — look is up"
+    - "&7Watch &ftitles &7for directions"
+    - "&7Walk with &fWASD &7only"
+    - "&7&fShift+Click &7= grab prize"
+    - "&8---------------"
+    - "&7Time left: &e{time}s"
+    - "&7Last signal: &f{signal}"
     - "&7Prizes: &f{prizes}/{total}"
 
 messages:
@@ -106,7 +112,7 @@ messages:
   arena-busy: "&cThat machine is already in a game."
   already-playing: "&cYou're already in a TheClaw game."
   not-playing: "&cYou're not in a TheClaw game."
-  machine-needs-claw: "&eMachine is almost ready but uh oh the claw is missing — we need another player!"
+  machine-needs-claw: "Machine is almost ready but uh oh the claw is missing we need another player!"
   thanks-human-claw: "&aThanks for being our human claw! Get ready.."
   left: "&eYou left TheClaw."
   partner-left: "&cYour partner left. Round cancelled."
@@ -120,12 +126,16 @@ messages:
   signal-right: "&e→ RIGHT"
   signal-subtitle: "&7Move that way!"
   sync-title: "&ePRESS &f{number}&e!"
-  sync-subtitle: "&7Both players — press hotbar &f{number}"
+  sync-subtitle: "&7Both players — press hotbar key &f{number}&7 now!"
   sync-locked-in: "&aLocked in &e{number}&a!"
   sync-lose: "&cThe claw slipped — you synced too well... you lose!"
+  sync-ok-grab: "&aSync cleared! Guide the claw onto a prize — they must &eShift+Click&a to grab."
+  sync-ok-grab-claw: "&aShift+Click a prize to pick it up!"
   grab-empty: "&cNothing in the claw's reach."
-  prize-grabbed: "&aGot a prize! Guide the claw to the drop opening."
-  prize-dropped: "&aPrize delivered! &e+{points}&a (&f{prizes}/{total}&a)"
+  grab-too-far: "&cNo prize close enough — get nearer and Shift+Click!"
+  already-holding: "&cYou're already holding a prize — get to the drop opening!"
+  prize-grabbed: "&aPrize grabbed! Guide the claw onto the drop opening block."
+  prize-dropped: "&aPrize delivered into the chute! &e+{points}&a (&f{prizes}/{total}&a)"
   win-clear: "&aMachine cleared! &e{points}&a points."
   round-over-miss: "&cRound over — no prize this time."
   round-over-win: "&aNice run! &e{points}&a points earned."
