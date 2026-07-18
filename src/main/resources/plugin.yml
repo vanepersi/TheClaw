@@ -3,7 +3,7 @@ version: '${version}'
 main: dev.genesi.theclaw.TheClawPlugin
 api-version: '26.1'
 authors: [Genesi]
-description: Two-player claw machine arcade — one drives the joystick, the other is the claw.
+description: Click-to-join two-player claw machine — operator signals a blind human claw.
 softdepend: [Vault, ItemsAdder, ModelEngine]
 
 commands:

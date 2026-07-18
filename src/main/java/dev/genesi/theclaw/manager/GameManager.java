@@ -3,48 +3,51 @@ package dev.genesi.theclaw.manager;
 import dev.genesi.theclaw.TheClawPlugin;
 import dev.genesi.theclaw.model.Arena;
 import dev.genesi.theclaw.model.GameSession;
-import dev.genesi.theclaw.model.PlayerRole;
-import dev.genesi.theclaw.util.ItemFactory;
+import dev.genesi.theclaw.scoreboard.ScoreboardService;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
+import net.kyori.adventure.title.Title;
 import org.bukkit.Bukkit;
 import org.bukkit.GameMode;
 import org.bukkit.Location;
 import org.bukkit.Particle;
 import org.bukkit.Sound;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.entity.Display;
 import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
-import org.bukkit.persistence.PersistentDataType;
+import org.bukkit.potion.PotionEffect;
+import org.bukkit.potion.PotionEffectType;
 import org.bukkit.util.BoundingBox;
 import org.bukkit.util.Transformation;
-import org.bukkit.util.Vector;
 import org.joml.AxisAngle4f;
 import org.joml.Vector3f;
 
+import java.time.Duration;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
-import java.util.Random;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 
 public final class GameManager {
 
     private final TheClawPlugin plugin;
+    private final ScoreboardService scoreboards;
     private final Map<String, GameSession> byArena = new HashMap<>();
     private final Map<UUID, GameSession> byPlayer = new HashMap<>();
-    private final Map<UUID, PlayerRole> preferredRole = new HashMap<>();
     private final Map<String, List<ItemDisplay>> previews = new HashMap<>();
-    private final java.util.Set<UUID> pluginMoving = java.util.concurrent.ConcurrentHashMap.newKeySet();
 
     public GameManager(TheClawPlugin plugin) {
         this.plugin = plugin;
+        this.scoreboards = new ScoreboardService(plugin);
     }
 
-    public boolean isPluginMoving(UUID uuid) {
-        return pluginMoving.contains(uuid);
+    public ScoreboardService getScoreboards() {
+        return scoreboards;
     }
 
     public Optional<GameSession> getByPlayer(UUID uuid) {
@@ -55,15 +58,26 @@ public final class GameManager {
         return Optional.ofNullable(byArena.get(arenaName.toLowerCase()));
     }
 
-    public void setPreferredRole(UUID uuid, PlayerRole role) {
-        preferredRole.put(uuid, role);
+    public Optional<Arena> findArenaByMachine(Location clickedBlock) {
+        if (clickedBlock == null || clickedBlock.getWorld() == null) {
+            return Optional.empty();
+        }
+        for (Arena arena : plugin.getArenaManager().getArenas()) {
+            Location machine = arena.getMachineBlock();
+            if (machine == null || machine.getWorld() == null) {
+                continue;
+            }
+            if (machine.getWorld().equals(clickedBlock.getWorld())
+                    && machine.getBlockX() == clickedBlock.getBlockX()
+                    && machine.getBlockY() == clickedBlock.getBlockY()
+                    && machine.getBlockZ() == clickedBlock.getBlockZ()) {
+                return Optional.of(arena);
+            }
+        }
+        return Optional.empty();
     }
 
-    public PlayerRole getPreferredRole(UUID uuid) {
-        return preferredRole.getOrDefault(uuid, PlayerRole.ANY);
-    }
-
-    public String join(Player player, Arena arena) {
+    public String clickMachine(Player player, Arena arena) {
         if (byPlayer.containsKey(player.getUniqueId())) {
             return "already-playing";
         }
@@ -72,151 +86,410 @@ public final class GameManager {
         }
 
         GameSession existing = byArena.get(arena.getName());
-        if (existing != null && existing.getState() == GameSession.State.PLAYING) {
+        if (existing != null && existing.getState() != GameSession.State.WAITING) {
             return "arena-busy";
         }
         if (existing != null && existing.isFull()) {
             return "arena-busy";
         }
 
-        double fee = plugin.getArenaManager().resolveEntryFee(arena);
-        double charged = 0;
-        if (fee > 0) {
-            if (!plugin.getEconomyService().isReady()) {
-                return "economy-missing";
-            }
-            if (!plugin.getEconomyService().has(player, fee) && !player.hasPermission("theclaw.bypass.fee")) {
-                plugin.getMessageService().send(player, "not-enough-money", Map.of(
-                        "amount", plugin.getEconomyService().format(fee),
-                        "balance", plugin.getEconomyService().format(plugin.getEconomyService().getBalance(player))
-                ));
-                return "handled";
-            }
-            if (!plugin.getEconomyService().charge(player, fee)) {
-                plugin.getMessageService().send(player, "not-enough-money", Map.of(
-                        "amount", plugin.getEconomyService().format(fee),
-                        "balance", plugin.getEconomyService().format(plugin.getEconomyService().getBalance(player))
-                ));
-                return "handled";
-            }
-            if (!player.hasPermission("theclaw.bypass.fee")) {
-                charged = fee;
-            }
-        }
-
-        GameSession session = existing;
-        if (session == null) {
+        if (existing == null) {
             int duration = plugin.getArenaManager().resolveDuration(arena);
             int prizePoints = plugin.getArenaManager().resolvePrizePoints(arena);
             int clearBonus = plugin.getArenaManager().resolveClearBonus(arena);
-            session = new GameSession(arena.getName(), arena.getPrizes().size(), duration, prizePoints, clearBonus);
-            byArena.put(arena.getName(), session);
+            existing = new GameSession(arena.getName(), arena.getPrizes().size(), duration, prizePoints, clearBonus);
+            byArena.put(arena.getName(), existing);
         }
 
-        PlayerRole preferred = getPreferredRole(player.getUniqueId());
-        boolean asOperator = assignRole(session, preferred);
-
-        if (asOperator) {
-            session.setOperator(player);
-        } else {
-            session.setClaw(player);
-        }
-        session.recordFeePaid(player.getUniqueId(), charged);
-
-        byPlayer.put(player.getUniqueId(), session);
-
-        Location lobby = arena.getLobby();
-        if (lobby != null) {
-            player.teleport(lobby);
+        if (existing.getOperatorId() == null) {
+            existing.setOperator(player);
+            byPlayer.put(player.getUniqueId(), existing);
+            plugin.getMessageService().send(player, "machine-needs-claw");
+            scoreboards.show(player, existing, true);
+            return "ok-waiting";
         }
 
-        String roleName = asOperator ? PlayerRole.OPERATOR.display() : PlayerRole.CLAW.display();
-        if (!session.isFull()) {
-            plugin.getMessageService().send(player, "joined-waiting", Map.of(
-                    "arena", arena.getName(),
-                    "role", roleName
-            ));
-            plugin.getMessageService().send(player, "waiting-partner", Map.of("arena", arena.getName()));
-            return "ok";
-        }
-
-        startGame(session, arena);
-        return "ok";
+        // Second clicker is always the claw.
+        existing.setClaw(player);
+        byPlayer.put(player.getUniqueId(), existing);
+        plugin.getMessageService().send(player, "thanks-human-claw");
+        beginMatch(existing, arena);
+        return "ok-start";
     }
 
-    private boolean assignRole(GameSession session, PlayerRole preferred) {
-        boolean operatorOpen = session.getOperatorId() == null;
-        boolean clawOpen = session.getClawId() == null;
-
-        if (preferred == PlayerRole.OPERATOR && operatorOpen) {
-            return true;
-        }
-        if (preferred == PlayerRole.CLAW && clawOpen) {
-            return false;
-        }
-        if (operatorOpen && !clawOpen) {
-            return true;
-        }
-        if (clawOpen && !operatorOpen) {
-            return false;
-        }
-        // Both open — first player becomes operator by default unless they asked for claw
-        if (preferred == PlayerRole.CLAW) {
-            return false;
-        }
-        return true;
-    }
-
-    private void startGame(GameSession session, Arena arena) {
+    private void beginMatch(GameSession session, Arena arena) {
         clearPreview(arena.getName());
-        session.setState(GameSession.State.PLAYING);
+        session.setState(GameSession.State.COUNTDOWN);
 
         Player operator = Bukkit.getPlayer(session.getOperatorId());
         Player claw = Bukkit.getPlayer(session.getClawId());
         if (operator == null || claw == null) {
+            endSession(session, false, "partner-left", null);
+            return;
+        }
+
+        spawnPrizes(session, arena.getPrizes());
+
+        Location clawSpawn = arena.getClawSpawn();
+        if (clawSpawn != null) {
+            claw.teleport(clawSpawn);
+            session.lockClawLook(clawSpawn.getYaw(), clawSpawn.getPitch());
+        } else {
+            session.lockClawLook(claw.getLocation().getYaw(), claw.getLocation().getPitch());
+        }
+
+        animateClawScaleIn(session, claw);
+        applyClawEffects(claw);
+        spawnClawVisual(session, claw);
+
+        scoreboards.show(operator, session, true);
+        scoreboards.show(claw, session, false);
+
+        int countdown = plugin.getConfig().getInt("countdown-seconds", 3);
+        runCountdown(session, arena, countdown);
+    }
+
+    private void runCountdown(GameSession session, Arena arena, int secondsLeft) {
+        if (session.isFinished()) {
+            return;
+        }
+        Player operator = Bukkit.getPlayer(session.getOperatorId());
+        Player claw = Bukkit.getPlayer(session.getClawId());
+        if (operator == null || claw == null) {
+            endSession(session, false, "partner-left", null);
+            return;
+        }
+
+        if (secondsLeft <= 0) {
+            showTitle(operator, "&aGO!", "&7Guide the claw");
+            showTitle(claw, "&aGO!", "&7Follow the signals");
+            session.setState(GameSession.State.GUIDING);
+            session.setTickTask(Bukkit.getScheduler().runTaskTimer(plugin, () -> tick(session), 1L, 1L));
+            return;
+        }
+
+        showTitle(operator, "&e" + secondsLeft, "&7Get on the control pad");
+        showTitle(claw, "&e" + secondsLeft, "&7Get ready...");
+        Bukkit.getScheduler().runTaskLater(plugin, () -> runCountdown(session, arena, secondsLeft - 1), 20L);
+    }
+
+    private void tick(GameSession session) {
+        if (session.isFinished()) {
+            return;
+        }
+        Player operator = Bukkit.getPlayer(session.getOperatorId());
+        Player claw = Bukkit.getPlayer(session.getClawId());
+        if (operator == null || !operator.isOnline() || claw == null || !claw.isOnline()) {
+            endSession(session, false, "partner-left", null);
+            return;
+        }
+
+        Arena arena = plugin.getArenaManager().get(session.getArenaName()).orElse(null);
+        if (arena == null) {
             endSession(session, false, null, null);
             return;
         }
 
-        Location operatorSpawn = arena.getOperatorSpawn();
-        Location clawSpawn = arena.getClawSpawn();
-        if (operatorSpawn != null) {
-            operator.teleport(operatorSpawn);
+        lockClawLook(session, claw);
+        keepClawInBounds(session, claw, arena);
+        syncClawVisual(session, claw);
+        if (session.isHolding()) {
+            syncHeldPrize(session, claw);
+            tryDeliverPrize(session, claw, arena);
         }
-        if (clawSpawn != null) {
-            pluginMoving.add(claw.getUniqueId());
-            try {
-                claw.teleport(clawSpawn);
-            } finally {
-                pluginMoving.remove(claw.getUniqueId());
+
+        if (session.getState() == GameSession.State.GUIDING) {
+            tickGuiding(session, operator, claw, arena);
+        } else if (session.getState() == GameSession.State.SYNC) {
+            tickSync(session, operator, claw, arena);
+        }
+
+        if (Bukkit.getCurrentTick() % 20 == 0) {
+            scoreboards.update(operator, session, true);
+            scoreboards.update(claw, session, false);
+        }
+    }
+
+    private void tickGuiding(GameSession session, Player operator, Player claw, Arena arena) {
+        double maxDist = plugin.getConfig().getDouble("operator-max-distance", 6.0);
+        Location center = arena.getMachineCenter();
+        if (center != null && operator.getWorld().equals(center.getWorld())
+                && operator.getLocation().distanceSquared(center) > maxDist * maxDist) {
+            plugin.getMessageService().send(operator, "too-far");
+            plugin.getMessageService().send(claw, "partner-too-far");
+            endSession(session, false, "ended-too-far", null);
+            return;
+        }
+
+        if (!isOnControlPad(operator, arena)) {
+            if (session.getOffPadSeconds() < 0) {
+                session.setOffPadSeconds(plugin.getConfig().getInt("off-pad-grace-seconds", 10));
+                showTitle(operator, "&cHurry back!", "&7Stand on the control pad");
+            } else if (Bukkit.getCurrentTick() % 20 == 0) {
+                session.setOffPadSeconds(session.getOffPadSeconds() - 1);
+                showTitle(operator, "&cHurry back!", "&e" + session.getOffPadSeconds() + "s");
+                if (session.getOffPadSeconds() <= 0) {
+                    endSession(session, false, "ended-left-pad", null);
+                    return;
+                }
             }
-            session.setRaisedY(clawSpawn.getY());
         } else {
-            session.setRaisedY(claw.getLocation().getY());
+            session.setOffPadSeconds(-1);
+            pollOperatorInput(session, operator);
         }
 
-        spawnPrizes(session, arena.getPrizes());
-        spawnClawVisual(session, claw);
-        giveOperatorControls(operator);
-        giveClawGrab(claw);
+        if (Bukkit.getCurrentTick() % 20 == 0) {
+            session.decrementSecond();
+            if (session.getRemainingSeconds() <= 0) {
+                beginDrop(session, operator, claw, arena);
+            }
+        }
+    }
 
-        claw.setGameMode(GameMode.ADVENTURE);
-        claw.setAllowFlight(true);
-        claw.setFlying(true);
-        claw.setFlySpeed(0.0f);
-        claw.setWalkSpeed(0.0f);
+    private void pollOperatorInput(GameSession session, Player operator) {
+        long now = System.currentTimeMillis();
+        long cooldown = plugin.getConfig().getLong("signal-cooldown-millis", 350L);
+        if (now - session.getLastSignalMillis() < cooldown) {
+            return;
+        }
 
-        plugin.getMessageService().send(operator, "joined-start", Map.of(
-                "arena", arena.getName(),
-                "role", PlayerRole.OPERATOR.display()
-        ));
-        plugin.getMessageService().send(claw, "joined-start", Map.of(
-                "arena", arena.getName(),
-                "role", PlayerRole.CLAW.display()
-        ));
+        GameSession.Signal signal = null;
+        try {
+            var input = operator.getCurrentInput();
+            if (input.isForward()) {
+                signal = GameSession.Signal.FORWARD;
+            } else if (input.isBackward()) {
+                signal = GameSession.Signal.BACK;
+            } else if (input.isLeft()) {
+                signal = GameSession.Signal.LEFT;
+            } else if (input.isRight()) {
+                signal = GameSession.Signal.RIGHT;
+            }
+        } catch (Throwable ignored) {
+            // Input API unavailable in some environments.
+        }
 
-        updateActionBars(session);
-        session.setTickTask(Bukkit.getScheduler().runTaskTimer(plugin, () -> tick(session), 20L, 20L));
+        if (signal != null) {
+            sendSignal(session, signal);
+        }
+    }
+
+    public void handleScrollSignal(Player operator, boolean forward, boolean sneak) {
+        GameSession session = byPlayer.get(operator.getUniqueId());
+        if (session == null || session.getState() != GameSession.State.GUIDING) {
+            return;
+        }
+        if (!session.isOperator(operator.getUniqueId())) {
+            return;
+        }
+        Arena arena = plugin.getArenaManager().get(session.getArenaName()).orElse(null);
+        if (arena == null || !isOnControlPad(operator, arena)) {
+            return;
+        }
+
+        GameSession.Signal signal;
+        if (sneak) {
+            signal = forward ? GameSession.Signal.RIGHT : GameSession.Signal.LEFT;
+        } else {
+            signal = forward ? GameSession.Signal.FORWARD : GameSession.Signal.BACK;
+        }
+        sendSignal(session, signal);
+    }
+
+    private void sendSignal(GameSession session, GameSession.Signal signal) {
+        long now = System.currentTimeMillis();
+        long cooldown = plugin.getConfig().getLong("signal-cooldown-millis", 350L);
+        if (now - session.getLastSignalMillis() < cooldown) {
+            return;
+        }
+        session.setLastSignal(signal, now);
+
+        Player claw = Bukkit.getPlayer(session.getClawId());
+        Player operator = Bukkit.getPlayer(session.getOperatorId());
+        if (claw == null) {
+            return;
+        }
+
+        String titleKey = switch (signal) {
+            case FORWARD -> "signal-forward";
+            case BACK -> "signal-back";
+            case LEFT -> "signal-left";
+            case RIGHT -> "signal-right";
+        };
+        String title = plugin.getConfig().getString("messages." + titleKey, signal.name());
+        showTitle(claw, title, plugin.getConfig().getString("messages.signal-subtitle", "&7Move that way!"));
+        claw.playSound(claw.getLocation(), Sound.BLOCK_NOTE_BLOCK_PLING, 0.7f, 1.4f);
+        if (operator != null) {
+            operator.playSound(operator.getLocation(), Sound.UI_BUTTON_CLICK, 0.35f, 1.6f);
+        }
+    }
+
+    private void beginDrop(GameSession session, Player operator, Player claw, Arena arena) {
+        session.setState(GameSession.State.DROPPING);
+        showTitle(operator, "&6CLAW DROP!", "&7Sync challenge incoming");
+        showTitle(claw, "&6DROPPING!", "&7Get ready to sync");
+        claw.getWorld().playSound(claw.getLocation(), Sound.BLOCK_PISTON_EXTEND, 1.0f, 0.7f);
+
+        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+            if (session.isFinished()) {
+                return;
+            }
+            startSyncChallenge(session, operator, claw, arena);
+        }, plugin.getConfig().getLong("drop-windup-ticks", 30L));
+    }
+
+    private void startSyncChallenge(GameSession session, Player operator, Player claw, Arena arena) {
+        if (session.isFinished()) {
+            return;
+        }
+        session.setState(GameSession.State.SYNC);
+        int number = ThreadLocalRandom.current().nextInt(1, 10);
+        int ticks = plugin.getConfig().getInt("sync-window-ticks", 60);
+        session.beginSync(number, ticks);
+
+        String main = plugin.getMessageService().apply(
+                plugin.getConfig().getString("messages.sync-title", "&ePRESS &f{number}&e!"),
+                Map.of("number", String.valueOf(number))
+        );
+        String sub = plugin.getConfig().getString("messages.sync-subtitle", "&7Both players — hotbar key {number}");
+        sub = plugin.getMessageService().apply(sub, Map.of("number", String.valueOf(number)));
+        showTitle(operator, main, sub);
+        showTitle(claw, main, sub);
+        operator.playSound(operator.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.0f);
+        claw.playSound(claw.getLocation(), Sound.BLOCK_NOTE_BLOCK_BELL, 1.0f, 1.0f);
+    }
+
+    private void tickSync(GameSession session, Player operator, Player claw, Arena arena) {
+        session.decrementSyncTick();
+        if (session.bothSynced()) {
+            resolveSync(session, operator, claw, arena, true);
+            return;
+        }
+        if (session.getSyncTicksLeft() <= 0) {
+            resolveSync(session, operator, claw, arena, false);
+        }
+    }
+
+    public void handleHotbarPress(Player player, int newSlot) {
+        GameSession session = byPlayer.get(player.getUniqueId());
+        if (session == null || session.getState() != GameSession.State.SYNC) {
+            return;
+        }
+        Integer needed = session.getSyncNumber();
+        if (needed == null) {
+            return;
+        }
+        // Hotbar slots are 0-8 → keys 1-9
+        int pressed = newSlot + 1;
+        if (pressed != needed) {
+            return;
+        }
+        if (session.markSynced(player.getUniqueId())) {
+            plugin.getMessageService().send(player, "sync-locked-in", Map.of("number", String.valueOf(needed)));
+            player.playSound(player.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 0.8f, 1.3f);
+        }
+        if (session.bothSynced()) {
+            Player operator = Bukkit.getPlayer(session.getOperatorId());
+            Player claw = Bukkit.getPlayer(session.getClawId());
+            Arena arena = plugin.getArenaManager().get(session.getArenaName()).orElse(null);
+            if (operator != null && claw != null && arena != null) {
+                resolveSync(session, operator, claw, arena, true);
+            }
+        }
+    }
+
+    private void resolveSync(GameSession session, Player operator, Player claw, Arena arena, boolean bothPressed) {
+        if (session.getState() != GameSession.State.SYNC) {
+            return;
+        }
+        session.clearSync();
+
+        // Correct + fast sync = claw FAILS (you lose the grab) — rigged like a real machine.
+        // Missed / too slow sync = claw miraculously grabs.
+        boolean grabSuccess = !bothPressed;
+        if (plugin.getConfig().getBoolean("sync-success-means-grab", false)) {
+            grabSuccess = bothPressed;
+        }
+
+        if (!grabSuccess) {
+            plugin.getMessageService().send(operator, "sync-lose");
+            plugin.getMessageService().send(claw, "sync-lose");
+            showTitle(operator, "&cSLIP!", "&7The claw failed...");
+            showTitle(claw, "&cSLIP!", "&7Nothing stuck");
+            claw.playSound(claw.getLocation(), Sound.ENTITY_ITEM_BREAK, 1.0f, 0.6f);
+            endSession(session, false, "round-over-miss", null);
+            return;
+        }
+
+        double radius = plugin.getConfig().getDouble("grab-radius", 1.35);
+        Optional<ItemDisplay> nearby = findNearbyPrize(session, claw.getLocation(), radius);
+        if (nearby.isEmpty()) {
+            plugin.getMessageService().send(operator, "grab-empty");
+            plugin.getMessageService().send(claw, "grab-empty");
+            endSession(session, false, "round-over-miss", null);
+            return;
+        }
+
+        ItemDisplay display = nearby.get();
+        Integer index = display.getPersistentDataContainer().get(
+                plugin.getItemFactory().getPrizeKey(),
+                org.bukkit.persistence.PersistentDataType.INTEGER
+        );
+        if (index == null || session.isCollected(index)) {
+            endSession(session, false, "round-over-miss", null);
+            return;
+        }
+
+        session.setHeldPrizeIndex(index);
+        syncHeldPrize(session, claw);
+        plugin.getMessageService().send(operator, "prize-grabbed");
+        plugin.getMessageService().send(claw, "prize-grabbed");
+        showTitle(operator, "&aGOT IT!", "&7Guide them to the drop");
+        showTitle(claw, "&aHOLDING!", "&7Follow signals to the opening");
+        session.setState(GameSession.State.GUIDING);
+        session.setRemainingSeconds(plugin.getConfig().getInt("deliver-seconds", 25));
+    }
+
+    private void tryDeliverPrize(GameSession session, Player claw, Arena arena) {
+        if (!session.isHolding()) {
+            return;
+        }
+        Location chute = arena.getDropChute();
+        if (chute == null || chute.getWorld() == null) {
+            return;
+        }
+        double dropRadius = plugin.getConfig().getDouble("drop-radius", 1.4);
+        if (claw.getLocation().distanceSquared(chute) > dropRadius * dropRadius) {
+            return;
+        }
+
+        Integer index = session.getHeldPrizeIndex();
+        session.setHeldPrizeIndex(null);
+        if (index == null || !session.markCollected(index)) {
+            return;
+        }
+        ItemDisplay display = index < session.getPrizeDisplays().size() ? session.getPrizeDisplays().get(index) : null;
+        if (display != null && !display.isDead()) {
+            detachDisplay(claw, display);
+            display.remove();
+        }
+        int points = session.getPrizePoints();
+        session.addPointsEarned(points);
+        Player operator = Bukkit.getPlayer(session.getOperatorId());
+        Map<String, String> placeholders = Map.of(
+                "points", String.valueOf(points),
+                "prizes", String.valueOf(session.getCollectedCount()),
+                "total", String.valueOf(session.getTotalPrizes())
+        );
+        plugin.getMessageService().send(claw, "prize-dropped", placeholders);
+        if (operator != null) {
+            plugin.getMessageService().send(operator, "prize-dropped", placeholders);
+        }
+        if (session.allCollected()) {
+            endSession(session, true, "win-clear", null);
+        } else {
+            endSession(session, false, "round-over-win", null);
+        }
     }
 
     public void leave(Player player, boolean announce) {
@@ -235,260 +508,261 @@ public final class GameManager {
             }
             session.clearPlayer(player.getUniqueId());
             byPlayer.remove(player.getUniqueId());
+            scoreboards.clear(player);
             if (announce) {
                 plugin.getMessageService().send(player, "left");
             }
             if (session.playerCount() == 0) {
                 byArena.remove(session.getArenaName());
-            } else {
-                UUID remaining = session.getOperatorId() != null ? session.getOperatorId() : session.getClawId();
-                Player other = remaining == null ? null : Bukkit.getPlayer(remaining);
-                if (other != null) {
-                    plugin.getMessageService().send(other, "partner-left");
-                }
             }
             return;
         }
 
-        UUID leaverId = player.getUniqueId();
         if (announce) {
             plugin.getMessageService().send(player, "left");
         }
-        endSession(session, false, "partner-left", leaverId);
+        endSession(session, false, "partner-left", player.getUniqueId());
     }
 
     public void forceStop(Arena arena) {
         GameSession session = byArena.get(arena.getName());
-        if (session == null) {
-            return;
+        if (session != null) {
+            endSession(session, false, null, null);
         }
-        endSession(session, false, null, null);
     }
 
-    public boolean handleOperatorControl(Player operator, String action) {
-        GameSession session = byPlayer.get(operator.getUniqueId());
-        if (session == null || session.isFinished() || session.getState() != GameSession.State.PLAYING) {
-            return false;
+    public void shutdown() {
+        for (GameSession session : List.copyOf(byArena.values())) {
+            endSession(session, false, null, null);
         }
-        if (!session.isOperator(operator.getUniqueId())) {
-            return false;
+        for (String arena : List.copyOf(previews.keySet())) {
+            clearPreview(arena);
         }
-
-        Player claw = Bukkit.getPlayer(session.getClawId());
-        if (claw == null || !claw.isOnline()) {
-            endSession(session, false, "partner-left", null);
-            return true;
-        }
-
-        Arena arena = plugin.getArenaManager().get(session.getArenaName()).orElse(null);
-        if (arena == null) {
-            return true;
-        }
-
-        BoundingBox bounds = arena.getBounds();
-        if (bounds == null) {
-            return true;
-        }
-
-        double step = plugin.getConfig().getDouble("move-step", 0.45);
-        double vStep = plugin.getConfig().getDouble("vertical-step", 0.35);
-        Location current = claw.getLocation();
-        Vector delta = switch (action) {
-            case ItemFactory.CTRL_NORTH -> new Vector(0, 0, -step);
-            case ItemFactory.CTRL_SOUTH -> new Vector(0, 0, step);
-            case ItemFactory.CTRL_WEST -> new Vector(-step, 0, 0);
-            case ItemFactory.CTRL_EAST -> new Vector(step, 0, 0);
-            case ItemFactory.CTRL_LOWER -> new Vector(0, -vStep, 0);
-            case ItemFactory.CTRL_RAISE -> new Vector(0, vStep, 0);
-            default -> null;
-        };
-        if (delta == null) {
-            return true;
-        }
-
-        Location next = current.clone().add(delta);
-        next.setX(clamp(next.getX(), bounds.getMinX(), bounds.getMaxX()));
-        next.setY(clamp(next.getY(), bounds.getMinY(), bounds.getMaxY()));
-        next.setZ(clamp(next.getZ(), bounds.getMinZ(), bounds.getMaxZ()));
-        next.setYaw(current.getYaw());
-        next.setPitch(current.getPitch());
-
-        pluginMoving.add(claw.getUniqueId());
-        try {
-            claw.teleport(next);
-            claw.setFlying(true);
-        } finally {
-            pluginMoving.remove(claw.getUniqueId());
-        }
-        operator.playSound(operator.getLocation(), Sound.UI_BUTTON_CLICK, 0.4f, 1.4f);
-
-        if (session.isHolding()) {
-            maybeSlip(session, claw, arena);
-            syncHeldPrize(session, claw);
-            tryDrop(session, claw, arena);
-        }
-
-        updateActionBars(session);
-        return true;
+        scoreboards.clearAll();
     }
 
-    public boolean handleGrab(Player clawPlayer) {
-        GameSession session = byPlayer.get(clawPlayer.getUniqueId());
-        if (session == null || session.isFinished() || session.getState() != GameSession.State.PLAYING) {
-            return false;
-        }
-        if (!session.isClaw(clawPlayer.getUniqueId())) {
-            return false;
-        }
-        if (session.isHolding()) {
-            plugin.getMessageService().send(clawPlayer, "already-holding");
-            return true;
-        }
-
-        Arena arena = plugin.getArenaManager().get(session.getArenaName()).orElse(null);
-        if (arena == null) {
-            return true;
-        }
-
-        double radius = plugin.getConfig().getDouble("grab-radius", 1.15);
-        Optional<ItemDisplay> nearby = findNearbyPrize(session, clawPlayer.getLocation(), radius);
-        if (nearby.isEmpty()) {
-            plugin.getMessageService().send(clawPlayer, "grab-too-far");
-            clawPlayer.playSound(clawPlayer.getLocation(), Sound.BLOCK_NOTE_BLOCK_BASS, 0.7f, 0.7f);
-            return true;
-        }
-
-        boolean lowered = isLowered(session, clawPlayer);
-        if (!lowered && plugin.getConfig().getDouble("grab-lowered-bonus", 0.18) > 0) {
-            // Soft hint — still allow attempt, but much harder
-            plugin.getMessageService().send(clawPlayer, "grab-not-lowered");
-        }
-
-        double chance = plugin.getConfig().getDouble("grab-success-chance", 0.38);
-        if (lowered) {
-            chance += plugin.getConfig().getDouble("grab-lowered-bonus", 0.18);
-        }
-        chance = clamp(chance, 0.05, 0.95);
-
-        ItemDisplay display = nearby.get();
-        Integer index = display.getPersistentDataContainer().get(plugin.getItemFactory().getPrizeKey(), PersistentDataType.INTEGER);
-        if (index == null || session.isCollected(index)) {
-            plugin.getMessageService().send(clawPlayer, "grab-too-far");
-            return true;
-        }
-
-        Random random = ThreadLocalRandom.current();
-        if (random.nextDouble() > chance) {
-            plugin.getMessageService().send(clawPlayer, "prize-missed");
-            clawPlayer.playSound(clawPlayer.getLocation(), Sound.ENTITY_ITEM_BREAK, 0.8f, 0.6f);
-            clawPlayer.getWorld().spawnParticle(Particle.SMOKE, clawPlayer.getLocation().clone().add(0, 1, 0), 8, 0.2, 0.2, 0.2, 0.01);
-            notifyOperator(session, "prize-missed");
-            return true;
-        }
-
-        session.setHeldPrizeIndex(index);
-        syncHeldPrize(session, clawPlayer);
-        clawPlayer.playSound(clawPlayer.getLocation(), Sound.BLOCK_METAL_HIT, 1.0f, 1.3f);
-        clawPlayer.getWorld().spawnParticle(Particle.CRIT, clawPlayer.getLocation().clone().add(0, 1, 0), 16, 0.25, 0.25, 0.25, 0.05);
-        plugin.getMessageService().send(clawPlayer, "prize-grabbed");
-        notifyOperator(session, "prize-grabbed");
-        updateActionBars(session);
-        tryDrop(session, clawPlayer, arena);
-        return true;
+    public void preview(Arena arena) {
+        clearPreview(arena.getName());
+        previews.put(arena.getName(), spawnDisplays(arena.getPrizes(), true));
     }
 
-    private void maybeSlip(GameSession session, Player claw, Arena arena) {
-        double slip = plugin.getConfig().getDouble("slip-chance-while-moving", 0.12);
-        if (slip <= 0 || !session.isHolding()) {
+    public void clearPreview(String arenaName) {
+        List<ItemDisplay> list = previews.remove(arenaName.toLowerCase());
+        if (list == null) {
             return;
         }
-        if (ThreadLocalRandom.current().nextDouble() > slip) {
-            return;
-        }
-        Integer index = session.getHeldPrizeIndex();
-        session.setHeldPrizeIndex(null);
-        if (index != null && index >= 0 && index < session.getPrizeDisplays().size()) {
-            ItemDisplay display = session.getPrizeDisplays().get(index);
+        for (ItemDisplay display : list) {
             if (display != null && !display.isDead()) {
-                detachDisplay(claw, display);
-                Location dropAt = claw.getLocation().clone().add(0, -0.4, 0);
-                BoundingBox bounds = arena.getBounds();
-                if (bounds != null) {
-                    dropAt.setY(Math.max(bounds.getMinY() + 0.2, dropAt.getY()));
-                }
-                moveDisplay(display, dropAt);
+                display.remove();
             }
         }
-        claw.playSound(claw.getLocation(), Sound.ENTITY_ITEM_PICKUP, 0.6f, 0.5f);
-        plugin.getMessageService().send(claw, "prize-slipped");
-        notifyOperator(session, "prize-slipped");
     }
 
-    private void tryDrop(GameSession session, Player claw, Arena arena) {
-        if (!session.isHolding()) {
+    private void endSession(GameSession session, boolean cleared, String messageKey, UUID excludeMessage) {
+        if (session.isFinished()) {
             return;
         }
-        Location chute = arena.getDropChute();
-        if (chute == null || chute.getWorld() == null) {
-            return;
-        }
-        double dropRadius = plugin.getConfig().getDouble("drop-radius", 1.4);
-        if (claw.getLocation().distanceSquared(chute) > dropRadius * dropRadius) {
-            return;
+        session.setFinished(true);
+        if (session.getTickTask() != null) {
+            session.getTickTask().cancel();
         }
 
-        Integer index = session.getHeldPrizeIndex();
-        session.setHeldPrizeIndex(null);
-        if (index == null || !session.markCollected(index)) {
-            return;
+        Player operator = session.getOperatorId() == null ? null : Bukkit.getPlayer(session.getOperatorId());
+        Player claw = session.getClawId() == null ? null : Bukkit.getPlayer(session.getClawId());
+
+        for (ItemDisplay display : session.getPrizeDisplays()) {
+            if (display != null && !display.isDead()) {
+                if (claw != null) {
+                    detachDisplay(claw, display);
+                }
+                display.remove();
+            }
+        }
+        ItemDisplay clawVisual = session.getClawVisual();
+        if (clawVisual != null && !clawVisual.isDead()) {
+            if (claw != null) {
+                detachDisplay(claw, clawVisual);
+            }
+            clawVisual.remove();
+        }
+        session.setClawVisual(null);
+
+        int points = session.getPointsEarned();
+        if (cleared) {
+            points += session.getClearBonusPoints();
+            session.addPointsEarned(session.getClearBonusPoints());
+        }
+        if (points > 0) {
+            if (operator != null) {
+                award(operator, session, points);
+            }
+            if (claw != null) {
+                award(claw, session, points);
+            }
         }
 
-        ItemDisplay display = index < session.getPrizeDisplays().size() ? session.getPrizeDisplays().get(index) : null;
-        if (display != null && !display.isDead()) {
-            detachDisplay(claw, display);
-            display.remove();
+        cleanupPlayer(operator, session, false);
+        cleanupPlayer(claw, session, true);
+
+        byArena.remove(session.getArenaName());
+        if (session.getOperatorId() != null) {
+            byPlayer.remove(session.getOperatorId());
+        }
+        if (session.getClawId() != null) {
+            byPlayer.remove(session.getClawId());
         }
 
-        int points = session.getPrizePoints();
-        session.addPointsEarned(points);
-
-        Player operator = Bukkit.getPlayer(session.getOperatorId());
         Map<String, String> placeholders = Map.of(
                 "points", String.valueOf(points),
                 "prizes", String.valueOf(session.getCollectedCount()),
-                "total", String.valueOf(session.getTotalPrizes())
+                "total", String.valueOf(session.getTotalPrizes()),
+                "arena", session.getArenaName()
         );
-        plugin.getMessageService().send(claw, "prize-dropped", placeholders);
-        if (operator != null) {
-            plugin.getMessageService().send(operator, "prize-dropped", placeholders);
+        if (messageKey != null) {
+            if (operator != null && !Objects.equals(operator.getUniqueId(), excludeMessage)) {
+                plugin.getMessageService().send(operator, messageKey, placeholders);
+            }
+            if (claw != null && !Objects.equals(claw.getUniqueId(), excludeMessage)) {
+                plugin.getMessageService().send(claw, messageKey, placeholders);
+            }
         }
-        claw.playSound(claw.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 0.8f, 1.4f);
-        claw.getWorld().spawnParticle(Particle.HAPPY_VILLAGER, chute.clone().add(0, 0.5, 0), 20, 0.3, 0.3, 0.3, 0.02);
+    }
 
-        updateActionBars(session);
-
-        if (session.allCollected()) {
-            endSession(session, true, "win-clear", null);
+    private void award(Player player, GameSession session, int points) {
+        plugin.getPointsService().addPoints(player, points);
+        if (plugin.getConfig().getBoolean("reward.deposit-to-vault", false)) {
+            plugin.getEconomyService().deposit(player, points);
         }
+    }
+
+    private void cleanupPlayer(Player player, GameSession session, boolean wasClaw) {
+        if (player == null) {
+            return;
+        }
+        scoreboards.clear(player);
+        player.removePotionEffect(PotionEffectType.BLINDNESS);
+        if (wasClaw) {
+            restoreScale(player, session.getOriginalClawScale());
+        }
+        player.setWalkSpeed(0.2f);
+        player.setFlySpeed(0.1f);
+        player.setAllowFlight(player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR);
+        if (player.getGameMode() != GameMode.CREATIVE && player.getGameMode() != GameMode.SPECTATOR) {
+            player.setFlying(false);
+        }
+        player.sendActionBar(net.kyori.adventure.text.Component.empty());
+        player.clearTitle();
+    }
+
+    private void animateClawScaleIn(GameSession session, Player claw) {
+        AttributeInstance scale = claw.getAttribute(Attribute.SCALE);
+        if (scale == null) {
+            return;
+        }
+        session.setOriginalClawScale(scale.getBaseValue());
+        double target = plugin.getConfig().getDouble("claw-scale", 0.55);
+        scale.setBaseValue(target);
+        claw.getWorld().spawnParticle(Particle.CLOUD, claw.getLocation().add(0, 1, 0), 20, 0.4, 0.6, 0.4, 0.02);
+        claw.playSound(claw.getLocation(), Sound.ENTITY_ILLUSIONER_CAST_SPELL, 0.8f, 1.2f);
+    }
+
+    private void restoreScale(Player player, double original) {
+        AttributeInstance scale = player.getAttribute(Attribute.SCALE);
+        if (scale != null) {
+            scale.setBaseValue(original <= 0 ? 1.0 : original);
+        }
+    }
+
+    private void applyClawEffects(Player claw) {
+        claw.setGameMode(GameMode.ADVENTURE);
+        claw.addPotionEffect(new PotionEffect(PotionEffectType.BLINDNESS, PotionEffect.INFINITE_DURATION, 1, false, false, true));
+        claw.setWalkSpeed((float) plugin.getConfig().getDouble("claw-walk-speed", 0.16));
+    }
+
+    private void lockClawLook(GameSession session, Player claw) {
+        Location loc = claw.getLocation();
+        if (Math.abs(loc.getYaw() - session.getClawLockedYaw()) < 0.05
+                && Math.abs(loc.getPitch() - session.getClawLockedPitch()) < 0.05) {
+            return;
+        }
+        loc.setYaw(session.getClawLockedYaw());
+        loc.setPitch(session.getClawLockedPitch());
+        claw.teleport(loc);
+    }
+
+    private void keepClawInBounds(GameSession session, Player claw, Arena arena) {
+        BoundingBox bounds = arena.getBounds();
+        if (bounds == null) {
+            return;
+        }
+        Location loc = claw.getLocation();
+        double x = clamp(loc.getX(), bounds.getMinX(), bounds.getMaxX());
+        double y = clamp(loc.getY(), bounds.getMinY(), bounds.getMaxY());
+        double z = clamp(loc.getZ(), bounds.getMinZ(), bounds.getMaxZ());
+        if (x != loc.getX() || y != loc.getY() || z != loc.getZ()) {
+            Location next = loc.clone();
+            next.setX(x);
+            next.setY(y);
+            next.setZ(z);
+            next.setYaw(session.getClawLockedYaw());
+            next.setPitch(session.getClawLockedPitch());
+            claw.teleport(next);
+        }
+    }
+
+    private boolean isOnControlPad(Player player, Arena arena) {
+        Location pad = arena.getControlPad();
+        if (pad == null || pad.getWorld() == null || !player.getWorld().equals(pad.getWorld())) {
+            return false;
+        }
+        Location feet = player.getLocation().clone().subtract(0, 0.1, 0);
+        return feet.getBlockX() == pad.getBlockX()
+                && feet.getBlockY() == pad.getBlockY()
+                && feet.getBlockZ() == pad.getBlockZ();
+    }
+
+    private void showTitle(Player player, String main, String sub) {
+        Title title = Title.title(
+                LegacyComponentSerializer.legacyAmpersand().deserialize(main == null ? "" : main),
+                LegacyComponentSerializer.legacyAmpersand().deserialize(sub == null ? "" : sub),
+                Title.Times.times(Duration.ofMillis(100), Duration.ofMillis(1200), Duration.ofMillis(200))
+        );
+        player.showTitle(title);
+    }
+
+    private Optional<ItemDisplay> findNearbyPrize(GameSession session, Location location, double radius) {
+        double radiusSq = radius * radius;
+        ItemDisplay closest = null;
+        double best = Double.MAX_VALUE;
+        for (int i = 0; i < session.getPrizeDisplays().size(); i++) {
+            if (session.isCollected(i) || Objects.equals(session.getHeldPrizeIndex(), i)) {
+                continue;
+            }
+            ItemDisplay display = session.getPrizeDisplays().get(i);
+            if (display == null || display.isDead()) {
+                continue;
+            }
+            double dist = display.getLocation().distanceSquared(location);
+            if (dist <= radiusSq && dist < best) {
+                best = dist;
+                closest = display;
+            }
+        }
+        return Optional.ofNullable(closest);
     }
 
     private void syncHeldPrize(GameSession session, Player claw) {
         Integer index = session.getHeldPrizeIndex();
-        if (index == null) {
-            return;
-        }
-        if (index < 0 || index >= session.getPrizeDisplays().size()) {
+        if (index == null || index < 0 || index >= session.getPrizeDisplays().size()) {
             return;
         }
         ItemDisplay display = session.getPrizeDisplays().get(index);
         if (display == null || display.isDead()) {
             return;
         }
-        // Ride the claw player as a passenger ItemDisplay — no armor stands.
         if (!claw.getPassengers().contains(display)) {
-            attachDisplay(claw, display, 0.0, -0.55, 0.0);
+            attachDisplay(claw, display, 0.0, -0.45, 0.0);
         }
-        syncClawVisual(session, claw);
     }
 
     private void syncClawVisual(GameSession session, Player claw) {
@@ -511,10 +785,10 @@ public final class GameManager {
         try {
             applyTranslation(display, ox, oy, oz);
             if (!carrier.addPassenger(display)) {
-                moveDisplay(display, carrier.getLocation().clone().add(ox, oy, oz));
+                display.teleport(carrier.getLocation().clone().add(ox, oy, oz));
             }
         } catch (Exception ex) {
-            moveDisplay(display, carrier.getLocation().clone().add(ox, oy, oz));
+            display.teleport(carrier.getLocation().clone().add(ox, oy, oz));
         }
     }
 
@@ -530,21 +804,8 @@ public final class GameManager {
                 display.leaveVehicle();
             }
         } catch (Exception ignored) {
-            // Fall through — display may already be detached.
         }
         applyTranslation(display, 0, 0, 0);
-    }
-
-    private void moveDisplay(ItemDisplay display, Location location) {
-        if (display == null || display.isDead() || location == null) {
-            return;
-        }
-        try {
-            display.setTeleportDuration(1);
-        } catch (Exception ignored) {
-            // Older/mocked APIs may not support teleport duration.
-        }
-        display.teleport(location);
     }
 
     private void applyTranslation(ItemDisplay display, double x, double y, double z) {
@@ -557,238 +818,6 @@ public final class GameManager {
                     current.getRightRotation()
             ));
         } catch (Exception ignored) {
-            // Mock or limited Display API.
-        }
-    }
-
-    private boolean isLowered(GameSession session, Player claw) {
-        double threshold = plugin.getConfig().getDouble("lowered-threshold", 1.25);
-        return claw.getLocation().getY() <= session.getRaisedY() - threshold;
-    }
-
-    public Optional<ItemDisplay> findNearbyPrize(GameSession session, Location location, double radius) {
-        double radiusSq = radius * radius;
-        ItemDisplay closest = null;
-        double best = Double.MAX_VALUE;
-        for (int i = 0; i < session.getPrizeDisplays().size(); i++) {
-            if (session.isCollected(i) || (session.getHeldPrizeIndex() != null && session.getHeldPrizeIndex() == i)) {
-                continue;
-            }
-            ItemDisplay display = session.getPrizeDisplays().get(i);
-            if (display == null || display.isDead()) {
-                continue;
-            }
-            double dist = display.getLocation().distanceSquared(location);
-            if (dist <= radiusSq && dist < best) {
-                best = dist;
-                closest = display;
-            }
-        }
-        return Optional.ofNullable(closest);
-    }
-
-    public void preview(Arena arena) {
-        clearPreview(arena.getName());
-        List<ItemDisplay> spawned = spawnDisplays(arena.getPrizes(), true);
-        previews.put(arena.getName(), spawned);
-    }
-
-    public void clearPreview(String arenaName) {
-        List<ItemDisplay> list = previews.remove(arenaName.toLowerCase());
-        if (list == null) {
-            return;
-        }
-        for (ItemDisplay display : list) {
-            if (display != null && !display.isDead()) {
-                display.remove();
-            }
-        }
-    }
-
-    public void shutdown() {
-        for (GameSession session : List.copyOf(byArena.values())) {
-            endSession(session, false, null, null);
-        }
-        for (String arena : List.copyOf(previews.keySet())) {
-            clearPreview(arena);
-        }
-    }
-
-    private void tick(GameSession session) {
-        if (session.isFinished() || session.getState() != GameSession.State.PLAYING) {
-            return;
-        }
-        Player operator = Bukkit.getPlayer(session.getOperatorId());
-        Player claw = Bukkit.getPlayer(session.getClawId());
-        if (operator == null || !operator.isOnline() || claw == null || !claw.isOnline()) {
-            endSession(session, false, "partner-left", null);
-            return;
-        }
-
-        if (session.isHolding()) {
-            syncHeldPrize(session, claw);
-            plugin.getArenaManager().get(session.getArenaName()).ifPresent(arena -> tryDrop(session, claw, arena));
-        } else {
-            syncClawVisual(session, claw);
-        }
-
-        session.decrementSecond();
-        updateActionBars(session);
-
-        if (session.getRemainingSeconds() <= 0) {
-            endSession(session, false, "time-up", null);
-        }
-    }
-
-    private void endSession(GameSession session, boolean cleared, String messageKey, UUID excludeMessage) {
-        if (session.isFinished()) {
-            return;
-        }
-        session.setFinished(true);
-
-        if (session.getTickTask() != null) {
-            session.getTickTask().cancel();
-        }
-
-        Player operator = session.getOperatorId() == null ? null : Bukkit.getPlayer(session.getOperatorId());
-        Player claw = session.getClawId() == null ? null : Bukkit.getPlayer(session.getClawId());
-
-        for (ItemDisplay display : session.getPrizeDisplays()) {
-            if (display != null && !display.isDead()) {
-                if (operator != null) {
-                    detachDisplay(operator, display);
-                }
-                if (claw != null) {
-                    detachDisplay(claw, display);
-                }
-                display.remove();
-            }
-        }
-        ItemDisplay clawVisual = session.getClawVisual();
-        if (clawVisual != null && !clawVisual.isDead()) {
-            if (claw != null) {
-                detachDisplay(claw, clawVisual);
-            }
-            clawVisual.remove();
-        }
-        session.setClawVisual(null);
-
-        int points = session.getPointsEarned();
-        if (cleared) {
-            points += session.getClearBonusPoints();
-            session.addPointsEarned(session.getClearBonusPoints());
-        }
-
-        if (points > 0) {
-            if (operator != null) {
-                award(operator, session, points);
-            }
-            if (claw != null) {
-                award(claw, session, points);
-            }
-        }
-
-        cleanupPlayer(operator, session);
-        cleanupPlayer(claw, session);
-
-        byArena.remove(session.getArenaName());
-        if (session.getOperatorId() != null) {
-            byPlayer.remove(session.getOperatorId());
-        }
-        if (session.getClawId() != null) {
-            byPlayer.remove(session.getClawId());
-        }
-
-        Map<String, String> placeholders = Map.of(
-                "points", String.valueOf(points),
-                "prizes", String.valueOf(session.getCollectedCount()),
-                "total", String.valueOf(session.getTotalPrizes()),
-                "arena", session.getArenaName()
-        );
-
-        if (messageKey != null) {
-            if (operator != null && !Objects.equals(operator.getUniqueId(), excludeMessage)) {
-                plugin.getMessageService().send(operator, messageKey, placeholders);
-            }
-            if (claw != null && !Objects.equals(claw.getUniqueId(), excludeMessage)) {
-                plugin.getMessageService().send(claw, messageKey, placeholders);
-            }
-        }
-    }
-
-    private void award(Player player, GameSession session, int points) {
-        plugin.getPointsService().addPoints(player, points);
-        if (plugin.getConfig().getBoolean("reward.deposit-to-vault", false)) {
-            plugin.getEconomyService().deposit(player, points);
-        }
-        runRewardCommands(player, session, points);
-    }
-
-    private void runRewardCommands(Player player, GameSession session, int points) {
-        List<String> commands = plugin.getConfig().getStringList("reward.commands");
-        for (String command : commands) {
-            if (command == null || command.isBlank()) {
-                continue;
-            }
-            String parsed = command
-                    .replace("{player}", player.getName())
-                    .replace("{uuid}", player.getUniqueId().toString())
-                    .replace("{points}", String.valueOf(points))
-                    .replace("{arena}", session.getArenaName())
-                    .replace("{prizes}", String.valueOf(session.getCollectedCount()));
-            Bukkit.dispatchCommand(Bukkit.getConsoleSender(), parsed);
-        }
-    }
-
-    private void cleanupPlayer(Player player, GameSession session) {
-        if (player == null) {
-            return;
-        }
-        if (plugin.getConfig().getBoolean("clear-items-on-end", true)) {
-            clearGameItems(player);
-        }
-        player.setFlySpeed(0.1f);
-        player.setWalkSpeed(0.2f);
-        player.setAllowFlight(player.getGameMode() == GameMode.CREATIVE || player.getGameMode() == GameMode.SPECTATOR);
-        if (player.getGameMode() != GameMode.CREATIVE && player.getGameMode() != GameMode.SPECTATOR) {
-            player.setFlying(false);
-        }
-        player.sendActionBar(net.kyori.adventure.text.Component.empty());
-
-        if (plugin.getConfig().getBoolean("teleport-on-end", true)) {
-            plugin.getArenaManager().get(session.getArenaName()).ifPresent(arena -> {
-                Location lobby = arena.getLobby();
-                if (lobby == null) {
-                    lobby = arena.getOperatorSpawn();
-                }
-                if (lobby != null) {
-                    player.teleport(lobby);
-                }
-            });
-        }
-    }
-
-    private void giveOperatorControls(Player player) {
-        clearGameItems(player);
-        player.getInventory().setItem(0, plugin.getItemFactory().createControl(ItemFactory.CTRL_NORTH));
-        player.getInventory().setItem(1, plugin.getItemFactory().createControl(ItemFactory.CTRL_SOUTH));
-        player.getInventory().setItem(2, plugin.getItemFactory().createControl(ItemFactory.CTRL_WEST));
-        player.getInventory().setItem(3, plugin.getItemFactory().createControl(ItemFactory.CTRL_EAST));
-        player.getInventory().setItem(4, plugin.getItemFactory().createControl(ItemFactory.CTRL_LOWER));
-        player.getInventory().setItem(5, plugin.getItemFactory().createControl(ItemFactory.CTRL_RAISE));
-    }
-
-    private void giveClawGrab(Player player) {
-        clearGameItems(player);
-        player.getInventory().setItem(0, plugin.getItemFactory().createGrabItem());
-    }
-
-    private void clearGameItems(Player player) {
-        ItemStack[] contents = player.getInventory().getContents();
-        for (int i = 0; i < contents.length; i++) {
-            if (plugin.getItemFactory().isClawGameItem(contents[i])) {
-                player.getInventory().setItem(i, null);
-            }
         }
     }
 
@@ -797,36 +826,28 @@ public final class GameManager {
         double yOffset = plugin.getConfig().getDouble("prize.y-offset", 0.0);
         ItemStack item = plugin.getItemFactory().createPrizeItem();
         String transformName = plugin.getConfig().getString("prize.display-transform", "FIXED");
-
         for (int i = 0; i < locations.size(); i++) {
             Location base = locations.get(i);
             if (base == null || base.getWorld() == null) {
                 session.getPrizeDisplays().add(null);
                 continue;
             }
-            Location spawnAt = base.clone().add(0, yOffset, 0);
             final int index = i;
-            ItemDisplay display = spawnAt.getWorld().spawn(spawnAt, ItemDisplay.class, entity -> {
-                configureItemDisplay(entity, item, scale, transformName, index);
-            });
+            ItemDisplay display = base.getWorld().spawn(base.clone().add(0, yOffset, 0), ItemDisplay.class, entity ->
+                    configureItemDisplay(entity, item, scale, transformName, index));
             session.getPrizeDisplays().add(display);
         }
     }
 
     private void spawnClawVisual(GameSession session, Player claw) {
-        if (!plugin.getConfig().getBoolean("claw-visual.enabled", true)) {
-            return;
-        }
-        if (claw == null || claw.getWorld() == null) {
+        if (!plugin.getConfig().getBoolean("claw-visual.enabled", true) || claw.getWorld() == null) {
             return;
         }
         float scale = (float) plugin.getConfig().getDouble("claw-visual.scale", 1.35);
         String transformName = plugin.getConfig().getString("claw-visual.display-transform", "FIXED");
         ItemStack item = plugin.getItemFactory().createClawVisualItem();
-        Location at = claw.getLocation().clone();
-        ItemDisplay visual = at.getWorld().spawn(at, ItemDisplay.class, entity -> {
-            configureItemDisplay(entity, item, scale, transformName, null);
-        });
+        ItemDisplay visual = claw.getWorld().spawn(claw.getLocation(), ItemDisplay.class, entity ->
+                configureItemDisplay(entity, item, scale, transformName, null));
         session.setClawVisual(visual);
         syncClawVisual(session, claw);
     }
@@ -837,17 +858,14 @@ public final class GameManager {
         ItemStack item = plugin.getItemFactory().createPrizeItem();
         String transformName = plugin.getConfig().getString("prize.display-transform", "FIXED");
         java.util.ArrayList<ItemDisplay> spawned = new java.util.ArrayList<>();
-
         for (int i = 0; i < locations.size(); i++) {
             Location base = locations.get(i);
             if (base == null || base.getWorld() == null) {
                 continue;
             }
-            Location spawnAt = base.clone().add(0, yOffset, 0);
             final int index = i;
-            ItemDisplay display = spawnAt.getWorld().spawn(spawnAt, ItemDisplay.class, entity -> {
-                configureItemDisplay(entity, item, scale, transformName, preview ? index : null);
-            });
+            ItemDisplay display = base.getWorld().spawn(base.clone().add(0, yOffset, 0), ItemDisplay.class, entity ->
+                    configureItemDisplay(entity, item, scale, transformName, preview ? index : null));
             spawned.add(display);
         }
         return spawned;
@@ -857,72 +875,28 @@ public final class GameManager {
         entity.setItemStack(item.clone());
         try {
             entity.setBillboard(Display.Billboard.FIXED);
-        } catch (Exception ignored) {
-            // Some test mocks do not implement Display billboards yet.
-        }
-        try {
-            ItemDisplay.ItemDisplayTransform transform = ItemDisplay.ItemDisplayTransform.FIXED;
-            if (transformName != null && !transformName.isBlank()) {
-                transform = ItemDisplay.ItemDisplayTransform.valueOf(transformName.trim().toUpperCase());
-            }
-            entity.setItemDisplayTransform(transform);
-        } catch (Exception ignored) {
-            // Invalid transform name or unimplemented mock API.
-        }
-        try {
+            entity.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.valueOf(
+                    transformName == null ? "FIXED" : transformName.trim().toUpperCase()
+            ));
             entity.setTransformation(new Transformation(
-                    new Vector3f(0f, 0f, 0f),
+                    new Vector3f(),
                     new AxisAngle4f(0f, 0f, 1f, 0f),
                     new Vector3f(scale, scale, scale),
                     new AxisAngle4f(0f, 0f, 1f, 0f)
             ));
-        } catch (Exception ignored) {
-            // Some test mocks do not implement Display transformations yet.
-        }
-        try {
             entity.setShadowRadius(0f);
-            entity.setShadowStrength(0f);
-            entity.setViewRange(1.0f);
             entity.setTeleportDuration(1);
         } catch (Exception ignored) {
-            // Optional Display knobs.
         }
         entity.setPersistent(false);
         entity.setInvulnerable(true);
         entity.setGravity(false);
         if (index != null) {
-            entity.getPersistentDataContainer().set(plugin.getItemFactory().getPrizeKey(), PersistentDataType.INTEGER, index);
-        }
-    }
-
-    private void updateActionBars(GameSession session) {
-        Player operator = session.getOperatorId() == null ? null : Bukkit.getPlayer(session.getOperatorId());
-        Player claw = session.getClawId() == null ? null : Bukkit.getPlayer(session.getClawId());
-
-        Map<String, String> base = Map.of(
-                "remaining", String.valueOf(Math.max(0, session.getRemainingSeconds())),
-                "prizes", String.valueOf(session.getCollectedCount()),
-                "total", String.valueOf(session.getTotalPrizes()),
-                "arena", session.getArenaName(),
-                "holding", session.isHolding() ? "HOLDING PRIZE" : "ready to grab"
-        );
-
-        if (operator != null) {
-            String template = plugin.getConfig().getString("action-bar-operator",
-                    "&dTheClaw &8| &e{remaining}s &8| &f{prizes}/{total} &8| &aJoystick");
-            plugin.getMessageService().actionBar(operator, plugin.getMessageService().apply(template, base));
-        }
-        if (claw != null) {
-            String template = plugin.getConfig().getString("action-bar-claw",
-                    "&dTheClaw &8| &e{remaining}s &8| &f{prizes}/{total} &8| &b{holding}");
-            plugin.getMessageService().actionBar(claw, plugin.getMessageService().apply(template, base));
-        }
-    }
-
-    private void notifyOperator(GameSession session, String key) {
-        Player operator = session.getOperatorId() == null ? null : Bukkit.getPlayer(session.getOperatorId());
-        if (operator != null) {
-            plugin.getMessageService().send(operator, key);
+            entity.getPersistentDataContainer().set(
+                    plugin.getItemFactory().getPrizeKey(),
+                    org.bukkit.persistence.PersistentDataType.INTEGER,
+                    index
+            );
         }
     }
 

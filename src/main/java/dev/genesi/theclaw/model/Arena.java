@@ -15,9 +15,9 @@ import java.util.Objects;
 public final class Arena {
 
     private final String name;
-    private Location operatorSpawn;
+    private Location machineBlock;
+    private Location controlPad;
     private Location clawSpawn;
-    private Location lobby;
     private Location dropChute;
     private Location boundsA;
     private Location boundsB;
@@ -35,12 +35,20 @@ public final class Arena {
         return name;
     }
 
-    public Location getOperatorSpawn() {
-        return cloneLocation(operatorSpawn);
+    public Location getMachineBlock() {
+        return cloneLocation(machineBlock);
     }
 
-    public void setOperatorSpawn(Location operatorSpawn) {
-        this.operatorSpawn = cloneLocation(operatorSpawn);
+    public void setMachineBlock(Location machineBlock) {
+        this.machineBlock = cloneLocation(machineBlock);
+    }
+
+    public Location getControlPad() {
+        return cloneLocation(controlPad);
+    }
+
+    public void setControlPad(Location controlPad) {
+        this.controlPad = cloneLocation(controlPad);
     }
 
     public Location getClawSpawn() {
@@ -49,14 +57,6 @@ public final class Arena {
 
     public void setClawSpawn(Location clawSpawn) {
         this.clawSpawn = cloneLocation(clawSpawn);
-    }
-
-    public Location getLobby() {
-        return cloneLocation(lobby);
-    }
-
-    public void setLobby(Location lobby) {
-        this.lobby = cloneLocation(lobby);
     }
 
     public Location getDropChute() {
@@ -91,6 +91,16 @@ public final class Arena {
             return null;
         }
         return BoundingBox.of(boundsA, boundsB);
+    }
+
+    public Location getMachineCenter() {
+        if (machineBlock != null) {
+            return cloneLocation(machineBlock).add(0.5, 0.0, 0.5);
+        }
+        if (controlPad != null) {
+            return cloneLocation(controlPad).add(0.5, 0.0, 0.5);
+        }
+        return getClawSpawn();
     }
 
     public List<Location> getPrizes() {
@@ -151,7 +161,8 @@ public final class Arena {
     }
 
     public boolean isReady() {
-        return operatorSpawn != null
+        return machineBlock != null
+                && controlPad != null
                 && clawSpawn != null
                 && dropChute != null
                 && getBounds() != null
@@ -160,9 +171,9 @@ public final class Arena {
 
     public Map<String, Object> serialize() {
         Map<String, Object> map = new LinkedHashMap<>();
-        map.put("operator-spawn", serializeLocation(operatorSpawn));
+        map.put("machine-block", serializeLocation(machineBlock));
+        map.put("control-pad", serializeLocation(controlPad));
         map.put("claw-spawn", serializeLocation(clawSpawn));
-        map.put("lobby", serializeLocation(lobby));
         map.put("drop-chute", serializeLocation(dropChute));
         map.put("bounds-a", serializeLocation(boundsA));
         map.put("bounds-b", serializeLocation(boundsB));
@@ -192,9 +203,9 @@ public final class Arena {
         if (section == null) {
             return arena;
         }
-        arena.operatorSpawn = deserializeLocation(section.getConfigurationSection("operator-spawn"));
+        arena.machineBlock = firstLocation(section, "machine-block", "operator-spawn");
+        arena.controlPad = firstLocation(section, "control-pad", "operator-spawn");
         arena.clawSpawn = deserializeLocation(section.getConfigurationSection("claw-spawn"));
-        arena.lobby = deserializeLocation(section.getConfigurationSection("lobby"));
         arena.dropChute = deserializeLocation(section.getConfigurationSection("drop-chute"));
         arena.boundsA = deserializeLocation(section.getConfigurationSection("bounds-a"));
         arena.boundsB = deserializeLocation(section.getConfigurationSection("bounds-b"));
@@ -221,6 +232,14 @@ public final class Arena {
             arena.entryFeeOverride = section.getDouble("entry-fee");
         }
         return arena;
+    }
+
+    private static Location firstLocation(ConfigurationSection section, String primary, String fallback) {
+        Location location = deserializeLocation(section.getConfigurationSection(primary));
+        if (location != null) {
+            return location;
+        }
+        return deserializeLocation(section.getConfigurationSection(fallback));
     }
 
     private static Map<String, Object> serializeLocation(Location location) {

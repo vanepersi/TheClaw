@@ -1,21 +1,23 @@
 package dev.genesi.theclaw.listener;
 
 import dev.genesi.theclaw.TheClawPlugin;
+import dev.genesi.theclaw.model.Arena;
 import dev.genesi.theclaw.model.GameSession;
+import org.bukkit.Location;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.block.Action;
 import org.bukkit.event.entity.EntityDamageEvent;
-import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
+import org.bukkit.event.player.PlayerItemHeldEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
-import org.bukkit.event.player.PlayerSwapHandItemsEvent;
+import org.bukkit.event.player.PlayerToggleSneakEvent;
 import org.bukkit.inventory.EquipmentSlot;
-import org.bukkit.inventory.ItemStack;
 
+import java.util.Map;
 import java.util.Optional;
 
 public final class GameListener implements Listener {
@@ -27,90 +29,124 @@ public final class GameListener implements Listener {
     }
 
     @EventHandler(priority = EventPriority.HIGH)
-    public void onInteract(PlayerInteractEvent event) {
+    public void onMachineClick(PlayerInteractEvent event) {
         if (event.getHand() != EquipmentSlot.HAND) {
             return;
         }
-        Action action = event.getAction();
-        if (action != Action.RIGHT_CLICK_AIR && action != Action.RIGHT_CLICK_BLOCK
-                && action != Action.LEFT_CLICK_AIR && action != Action.LEFT_CLICK_BLOCK) {
+        if (event.getAction() != Action.RIGHT_CLICK_BLOCK && event.getAction() != Action.LEFT_CLICK_BLOCK) {
+            return;
+        }
+        if (event.getClickedBlock() == null) {
             return;
         }
 
+        Optional<Arena> arena = plugin.getGameManager().findArenaByMachine(event.getClickedBlock().getLocation());
+        if (arena.isEmpty()) {
+            return;
+        }
+
+        event.setCancelled(true);
         Player player = event.getPlayer();
-        Optional<GameSession> sessionOpt = plugin.getGameManager().getByPlayer(player.getUniqueId());
-        if (sessionOpt.isEmpty()) {
-            return;
-        }
-        GameSession session = sessionOpt.get();
-        if (session.getState() != GameSession.State.PLAYING || session.isFinished()) {
-            return;
-        }
-
-        ItemStack hand = player.getInventory().getItemInMainHand();
-        String control = plugin.getItemFactory().getControlAction(hand);
-        if (control != null && session.isOperator(player.getUniqueId())) {
-            event.setCancelled(true);
-            plugin.getGameManager().handleOperatorControl(player, control);
-            return;
-        }
-
-        if (plugin.getItemFactory().isGrabItem(hand) && session.isClaw(player.getUniqueId())) {
-            event.setCancelled(true);
-            plugin.getGameManager().handleGrab(player);
+        String result = plugin.getGameManager().clickMachine(player, arena.get());
+        switch (result) {
+            case "already-playing" -> plugin.getMessageService().send(player, "already-playing");
+            case "arena-not-ready" -> plugin.getMessageService().send(player, "arena-not-ready", Map.of("arena", arena.get().getName()));
+            case "arena-busy" -> plugin.getMessageService().send(player, "arena-busy", Map.of("arena", arena.get().getName()));
+            default -> {
+            }
         }
     }
 
     @EventHandler(ignoreCancelled = true, priority = EventPriority.HIGH)
-    public void onClawMove(PlayerMoveEvent event) {
+    public void onMove(PlayerMoveEvent event) {
         Player player = event.getPlayer();
         Optional<GameSession> sessionOpt = plugin.getGameManager().getByPlayer(player.getUniqueId());
         if (sessionOpt.isEmpty()) {
             return;
         }
         GameSession session = sessionOpt.get();
-        if (session.getState() != GameSession.State.PLAYING || !session.isClaw(player.getUniqueId())) {
+        if (session.getState() == GameSession.State.WAITING || session.isFinished()) {
             return;
         }
-        if (event.getTo() == null) {
+
+        // Freeze claw head look — position movement allowed.
+        if (session.isClaw(player.getUniqueId()) && event.getTo() != null) {
+            Location to = event.getTo().clone();
+            to.setYaw(session.getClawLockedYaw());
+            to.setPitch(session.getClawLockedPitch());
+            event.setTo(to);
+        }
+
+        // Operator on pad: cancel walking away via WASD so input can be used as signals.
+        if (session.isOperator(player.getUniqueId())
+                && session.getState() == GameSession.State.GUIDING
+                && event.getTo() != null) {
+            plugin.getArenaManager().get(session.getArenaName()).ifPresent(arena -> {
+                Location pad = arena.getControlPad();
+                if (pad == null) {
+                    return;
+                }
+                Location from = event.getFrom();
+                boolean onPad = from.getBlockX() == pad.getBlockX()
+                        && from.getBlockY() == pad.getBlockY()
+                        && from.getBlockZ() == pad.getBlockZ();
+                if (!onPad) {
+                    return;
+                }
+                if (from.getX() != event.getTo().getX()
+                        || from.getY() != event.getTo().getY()
+                        || from.getZ() != event.getTo().getZ()) {
+                    Location stay = from.clone();
+                    stay.setYaw(event.getTo().getYaw());
+                    stay.setPitch(event.getTo().getPitch());
+                    event.setTo(stay);
+                }
+            });
+        }
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onScrollHeld(PlayerItemHeldEvent event) {
+        Player player = event.getPlayer();
+        Optional<GameSession> sessionOpt = plugin.getGameManager().getByPlayer(player.getUniqueId());
+        if (sessionOpt.isEmpty()) {
             return;
         }
-        if (plugin.getGameManager().isPluginMoving(player.getUniqueId())) {
+        GameSession session = sessionOpt.get();
+
+        if (session.getState() == GameSession.State.SYNC) {
+            plugin.getGameManager().handleHotbarPress(player, event.getNewSlot());
             return;
         }
-        // Claw player is moved only by the operator — lock self-movement, allow look.
-        if (event.getFrom().getX() != event.getTo().getX()
-                || event.getFrom().getY() != event.getTo().getY()
-                || event.getFrom().getZ() != event.getTo().getZ()) {
-            event.setTo(event.getFrom().clone().setDirection(event.getTo().getDirection()));
+
+        if (session.getState() != GameSession.State.GUIDING || !session.isOperator(player.getUniqueId())) {
+            return;
         }
+
+        int prev = event.getPreviousSlot();
+        int next = event.getNewSlot();
+        // Scroll "forward" vs "back" approximated by slot direction
+        boolean forward = (next - prev + 9) % 9 <= 4 && next != prev;
+        if ((prev == 0 && next == 8) || (prev > next && !(prev == 8 && next == 0))) {
+            forward = false;
+        }
+        if ((prev == 8 && next == 0) || (next > prev && !(prev == 0 && next == 8))) {
+            forward = true;
+        }
+        plugin.getGameManager().handleScrollSignal(player, forward, player.isSneaking());
+        // Keep their selected slot stable so scrolling is only a signal
+        event.setCancelled(true);
+    }
+
+    @EventHandler(ignoreCancelled = true)
+    public void onSneak(PlayerToggleSneakEvent event) {
+        // Sneak modifies scroll meaning; no extra work needed here.
     }
 
     @EventHandler(ignoreCancelled = true)
     public void onDamage(EntityDamageEvent event) {
-        if (!(event.getEntity() instanceof Player player)) {
-            return;
-        }
-        if (plugin.getGameManager().getByPlayer(player.getUniqueId()).isPresent()) {
-            event.setCancelled(true);
-        }
-    }
-
-    @EventHandler(ignoreCancelled = true)
-    public void onDrop(PlayerDropItemEvent event) {
-        if (plugin.getItemFactory().isClawGameItem(event.getItemDrop().getItemStack())
-                && plugin.getGameManager().getByPlayer(event.getPlayer().getUniqueId()).isPresent()) {
-            event.setCancelled(true);
-        }
-    }
-
-    @EventHandler(ignoreCancelled = true)
-    public void onSwap(PlayerSwapHandItemsEvent event) {
-        if (plugin.getGameManager().getByPlayer(event.getPlayer().getUniqueId()).isEmpty()) {
-            return;
-        }
-        if (plugin.getItemFactory().isClawGameItem(event.getMainHandItem())
-                || plugin.getItemFactory().isClawGameItem(event.getOffHandItem())) {
+        if (event.getEntity() instanceof Player player
+                && plugin.getGameManager().getByPlayer(player.getUniqueId()).isPresent()) {
             event.setCancelled(true);
         }
     }

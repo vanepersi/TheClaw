@@ -44,7 +44,7 @@ public class TheClawPlugin extends JavaPlugin {
 
         getServer().getPluginManager().registerEvents(new GameListener(this), this);
 
-        getLogger().info("TheClaw enabled. Economy: " + economyService.describe());
+        getLogger().info("TheClaw enabled. Click a machine block to join.");
     }
 
     @Override

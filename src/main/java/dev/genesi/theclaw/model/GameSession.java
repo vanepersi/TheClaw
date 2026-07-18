@@ -15,8 +15,18 @@ public final class GameSession {
 
     public enum State {
         WAITING,
-        PLAYING,
+        COUNTDOWN,
+        GUIDING,
+        DROPPING,
+        SYNC,
         FINISHED
+    }
+
+    public enum Signal {
+        FORWARD,
+        BACK,
+        LEFT,
+        RIGHT
     }
 
     private final String arenaName;
@@ -34,7 +44,16 @@ public final class GameSession {
     private int collectedCount;
     private int pointsEarned;
     private Integer heldPrizeIndex;
-    private double raisedY;
+    private float clawLockedYaw;
+    private float clawLockedPitch;
+    private double originalClawScale = 1.0;
+    private int offPadSeconds = -1;
+    private Integer syncNumber;
+    private boolean operatorSynced;
+    private boolean clawSynced;
+    private int syncTicksLeft;
+    private long lastSignalMillis;
+    private Signal lastSignal;
     private BukkitTask tickTask;
     private boolean finished;
     private final Map<UUID, Double> feesPaid = new HashMap<>();
@@ -178,6 +197,10 @@ public final class GameSession {
         return remainingSeconds;
     }
 
+    public void setRemainingSeconds(int remainingSeconds) {
+        this.remainingSeconds = remainingSeconds;
+    }
+
     public void decrementSecond() {
         remainingSeconds--;
     }
@@ -210,12 +233,91 @@ public final class GameSession {
         return heldPrizeIndex != null;
     }
 
-    public double getRaisedY() {
-        return raisedY;
+    public float getClawLockedYaw() {
+        return clawLockedYaw;
     }
 
-    public void setRaisedY(double raisedY) {
-        this.raisedY = raisedY;
+    public float getClawLockedPitch() {
+        return clawLockedPitch;
+    }
+
+    public void lockClawLook(float yaw, float pitch) {
+        this.clawLockedYaw = yaw;
+        this.clawLockedPitch = pitch;
+    }
+
+    public double getOriginalClawScale() {
+        return originalClawScale;
+    }
+
+    public void setOriginalClawScale(double originalClawScale) {
+        this.originalClawScale = originalClawScale;
+    }
+
+    public int getOffPadSeconds() {
+        return offPadSeconds;
+    }
+
+    public void setOffPadSeconds(int offPadSeconds) {
+        this.offPadSeconds = offPadSeconds;
+    }
+
+    public Integer getSyncNumber() {
+        return syncNumber;
+    }
+
+    public void beginSync(int number, int ticks) {
+        this.syncNumber = number;
+        this.syncTicksLeft = ticks;
+        this.operatorSynced = false;
+        this.clawSynced = false;
+    }
+
+    public void clearSync() {
+        this.syncNumber = null;
+        this.syncTicksLeft = 0;
+        this.operatorSynced = false;
+        this.clawSynced = false;
+    }
+
+    public boolean markSynced(UUID uuid) {
+        if (syncNumber == null) {
+            return false;
+        }
+        if (Objects.equals(uuid, operatorId)) {
+            operatorSynced = true;
+            return true;
+        }
+        if (Objects.equals(uuid, clawId)) {
+            clawSynced = true;
+            return true;
+        }
+        return false;
+    }
+
+    public boolean bothSynced() {
+        return operatorSynced && clawSynced;
+    }
+
+    public int getSyncTicksLeft() {
+        return syncTicksLeft;
+    }
+
+    public void decrementSyncTick() {
+        syncTicksLeft--;
+    }
+
+    public long getLastSignalMillis() {
+        return lastSignalMillis;
+    }
+
+    public Signal getLastSignal() {
+        return lastSignal;
+    }
+
+    public void setLastSignal(Signal signal, long millis) {
+        this.lastSignal = signal;
+        this.lastSignalMillis = millis;
     }
 
     public BukkitTask getTickTask() {

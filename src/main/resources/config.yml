@@ -1,51 +1,46 @@
-# TheClaw — two-player claw machine arcade
+# TheClaw — click-to-join human claw machine
 
-# Default round length in seconds (override per arena)
-default-duration-seconds: 90
+# Guide phase length before the claw drops
+default-duration-seconds: 35
 
-# Points awarded when a prize is successfully dropped in the chute
+# Extra seconds to reach the drop chute after a successful grab
+deliver-seconds: 25
+
 default-prize-points: 15
-
-# Bonus points when every prize is collected before time runs out
 default-clear-bonus-points: 25
-
-# Optional entry fee charged on join (Vault when available)
 entry-fee: 0.0
 
-# How far the claw moves per joystick click (blocks)
-move-step: 0.45
+# Title countdown before the round
+countdown-seconds: 3
 
-# How far raise/lower moves the claw on Y (blocks)
-vertical-step: 0.35
+# How far the operator may wander from the machine (blocks)
+operator-max-distance: 6.0
 
-# Distance from claw player to a prize required to attempt a grab
-grab-radius: 1.15
+# Seconds to return to the control pad before the game ends
+off-pad-grace-seconds: 10
 
-# Base chance (0.0–1.0) that a grab sticks — real claw machines are stingy
-grab-success-chance: 0.38
+# Signal spam protection
+signal-cooldown-millis: 350
 
-# Extra chance when fully lowered near the floor of the play bounds
-grab-lowered-bonus: 0.18
+# Claw drop windup before the sync number appears
+drop-windup-ticks: 30
 
-# Chance per move tick that a held prize slips free (0 = never)
-slip-chance-while-moving: 0.12
+# How long both players have to press the hotbar number (ticks)
+sync-window-ticks: 60
 
-# Distance from drop chute center to count as a successful drop
+# false = pressing correctly+fast makes the claw FAIL (real-machine feel / "you lose")
+# true  = pressing correctly+fast makes the grab succeed
+sync-success-means-grab: false
+
+grab-radius: 1.35
 drop-radius: 1.4
 
-# Y threshold: claw is "lowered" when at or below raised-y minus this amount
-lowered-threshold: 1.25
-
-# Return players to lobby when the round ends
-teleport-on-end: true
-
-# Clear control / grab items when the round ends
-clear-items-on-end: true
+# Scale applied to the human claw player (Attribute.SCALE)
+claw-scale: 0.55
+claw-walk-speed: 0.16
 
 # ---------------------------------------------------------------------------
 # Display entities (ItemDisplay) — never armor stands
-# Prizes and the claw arm are spawned as ItemDisplay entities so custom
-# models/textures render cleanly with ItemsAdder / ModelEngine / item-model.
 # ---------------------------------------------------------------------------
 prize:
   material: PLAYER_HEAD
@@ -55,11 +50,8 @@ prize:
   itemsadder-id: ""
   scale: 1.0
   y-offset: 0.0
-  # ItemDisplay transform: NONE, THIRDPERSON_LEFTHAND, THIRDPERSON_RIGHTHAND,
-  # FIRSTPERSON_LEFTHAND, FIRSTPERSON_RIGHTHAND, HEAD, GUI, GROUND, FIXED
   display-transform: FIXED
 
-# Visual claw arm riding the claw player (ItemDisplay). Set enabled: false to hide.
 claw-visual:
   enabled: true
   material: IRON_BARS
@@ -68,135 +60,89 @@ claw-visual:
   display-name: "&7Claw"
   itemsadder-id: ""
   scale: 1.35
-  # Local offset while riding the claw player
   offset-x: 0.0
   offset-y: 0.35
   offset-z: 0.0
   display-transform: FIXED
-
-controls:
-  move-north:
-    material: LIME_DYE
-    item-model: ""
-    custom-model-data: 0
-    display-name: "&aMove Forward"
-    lore:
-      - "&7Nudge the claw forward"
-    itemsadder-id: ""
-  move-south:
-    material: LIME_DYE
-    item-model: ""
-    custom-model-data: 0
-    display-name: "&aMove Back"
-    lore:
-      - "&7Nudge the claw backward"
-    itemsadder-id: ""
-  move-west:
-    material: LIME_DYE
-    item-model: ""
-    custom-model-data: 0
-    display-name: "&aMove Left"
-    lore:
-      - "&7Nudge the claw left"
-    itemsadder-id: ""
-  move-east:
-    material: LIME_DYE
-    item-model: ""
-    custom-model-data: 0
-    display-name: "&aMove Right"
-    lore:
-      - "&7Nudge the claw right"
-    itemsadder-id: ""
-  lower:
-    material: ORANGE_DYE
-    item-model: ""
-    custom-model-data: 0
-    display-name: "&6Lower Claw"
-    lore:
-      - "&7Drop the claw toward the prizes"
-    itemsadder-id: ""
-  raise:
-    material: LIGHT_BLUE_DYE
-    item-model: ""
-    custom-model-data: 0
-    display-name: "&bRaise Claw"
-    lore:
-      - "&7Lift the claw back up"
-    itemsadder-id: ""
 
 grab:
   material: TRIPWIRE_HOOK
   item-model: ""
   custom-model-data: 0
   display-name: "&eGrab!"
-  lore:
-    - "&7Right-click to clamp onto a prize"
-    - "&7Works best when the claw is lowered"
+  lore: []
   itemsadder-id: ""
 
-# ---------------------------------------------------------------------------
-# Rewards
-# Arcade points are always stored in points.yml for desk redemption.
-# Optionally also deposit into Vault and/or run console commands.
-# ---------------------------------------------------------------------------
 reward:
   deposit-to-vault: false
-  # Placeholders: {player} {uuid} {points} {arena} {prizes}
   commands: []
 
-# Action bars while playing
-action-bar-operator: "&dTheClaw &8| &e{remaining}s &8| &f{prizes}/{total} &8| &aJoystick"
-action-bar-claw: "&dTheClaw &8| &e{remaining}s &8| &f{prizes}/{total} &8| &b{holding}"
+scoreboard:
+  title: "&d&lTheClaw"
+  operator:
+    - "&7Role: &aOperator"
+    - "&7Stand on the &epad"
+    - "&7WASD = signal claw"
+    - "&7Scroll = signal too"
+    - "&7Shift+scroll = L/R"
+    - "&7Time: &e{time}s"
+    - "&7Pad: &f{pad}"
+    - "&7Prizes: &f{prizes}/{total}"
+  claw:
+    - "&7Role: &bHuman Claw"
+    - "&7You are &8BLIND"
+    - "&7Read title signals"
+    - "&7Walk only — look locked"
+    - "&7Time: &e{time}s"
+    - "&7Last: &f{signal}"
+    - "&7Prizes: &f{prizes}/{total}"
 
 messages:
   prefix: "&8[&dTheClaw&8] &r"
   no-permission: "&cYou don't have permission."
   players-only: "&cOnly players can use this command."
   arena-not-found: "&cArena &e{arena}&c was not found."
-  arena-not-ready: "&cArena &e{arena}&c needs operator spawn, claw spawn, bounds, drop chute, and at least one prize."
-  arena-busy: "&cArena &e{arena}&c is already in a game."
-  already-playing: "&cYou are already in a TheClaw game."
-  not-playing: "&cYou are not in a TheClaw game."
-  joined-waiting: "&aJoined &e{arena}&a as &f{role}&a. Waiting for a partner..."
-  joined-start: "&aGame starting in &e{arena}&a! You are the &f{role}&a."
+  arena-not-ready: "&cMachine &e{arena}&c is not fully set up yet."
+  arena-busy: "&cThat machine is already in a game."
+  already-playing: "&cYou're already in a TheClaw game."
+  not-playing: "&cYou're not in a TheClaw game."
+  machine-needs-claw: "&eMachine is almost ready but uh oh the claw is missing — we need another player!"
+  thanks-human-claw: "&aThanks for being our human claw! Get ready.."
   left: "&eYou left TheClaw."
   partner-left: "&cYour partner left. Round cancelled."
-  win-clear: "&aMachine cleared! Team earned &e{points}&a arcade points."
-  time-up: "&cTime's up! You secured &e{prizes}/{total}&c prizes (&e{points}&c points)."
-  prize-grabbed: "&aGot it! Guide the claw to the drop opening."
-  prize-missed: "&cThe claw slipped — nothing stuck!"
-  prize-slipped: "&eThe prize slipped free!"
-  prize-dropped: "&aPrize dropped! &e+{points}&a points (&f{prizes}/{total}&a)."
-  grab-too-far: "&cNothing in reach. Get closer (and lower) to grab."
-  grab-not-lowered: "&eLower the claw closer to the prizes first."
-  already-holding: "&cYou're already holding a prize — move to the opening!"
-  role-set: "&aPreferred role set to &e{role}&a for your next join."
-  role-invalid: "&cUse &eoperator&c, &eclaw&c, or &eany&c."
+  too-far: "&cYou wandered too far from the machine!"
+  partner-too-far: "&cYour operator wandered off — game over."
+  ended-too-far: "&cGame over — operator left the machine area."
+  ended-left-pad: "&cGame over — operator left the control pad."
+  signal-forward: "&a↑ FORWARD"
+  signal-back: "&c↓ BACK"
+  signal-left: "&e← LEFT"
+  signal-right: "&e→ RIGHT"
+  signal-subtitle: "&7Move that way!"
+  sync-title: "&ePRESS &f{number}&e!"
+  sync-subtitle: "&7Both players — press hotbar &f{number}"
+  sync-locked-in: "&aLocked in &e{number}&a!"
+  sync-lose: "&cThe claw slipped — you synced too well... you lose!"
+  grab-empty: "&cNothing in the claw's reach."
+  prize-grabbed: "&aGot a prize! Guide the claw to the drop opening."
+  prize-dropped: "&aPrize delivered! &e+{points}&a (&f{prizes}/{total}&a)"
+  win-clear: "&aMachine cleared! &e{points}&a points."
+  round-over-miss: "&cRound over — no prize this time."
+  round-over-win: "&aNice run! &e{points}&a points earned."
   points-self: "&7Arcade points: &e{points}"
-  points-other: "&e{player}&7 has &e{points}&7 arcade points."
-  points-added: "&aAdded &e{amount}&a points to &e{player}&a. New balance: &e{points}"
-  points-removed: "&eRemoved &e{amount}&e points from &e{player}&e. New balance: &e{points}"
-  points-set: "&aSet &e{player}&a's points to &e{points}"
-  redeem-success: "&aRedeemed &e{amount}&a points from &e{player}&a. Remaining: &e{points}"
-  not-enough-points: "&c{player} only has &e{points}&c points."
   arena-created: "&aCreated arena &e{arena}&a."
   arena-deleted: "&aDeleted arena &e{arena}&a."
-  operator-spawn-set: "&aSet operator (joystick) spawn for &e{arena}&a."
+  machine-set: "&aSet clickable machine block for &e{arena}&a."
+  pad-set: "&aSet control pad for &e{arena}&a."
   claw-spawn-set: "&aSet claw spawn for &e{arena}&a."
-  lobby-set: "&aSet lobby/exit for &e{arena}&a."
   drop-set: "&aSet drop chute for &e{arena}&a."
-  bounds-a-set: "&aSet bounds corner A for &e{arena}&a."
-  bounds-b-set: "&aSet bounds corner B for &e{arena}&a."
-  prize-added: "&aAdded prize spawn &e#{id}&a to &e{arena}&a."
-  prize-removed: "&aRemoved prize spawn &e#{id}&a from &e{arena}&a."
+  bounds-a-set: "&aSet bounds A for &e{arena}&a."
+  bounds-b-set: "&aSet bounds B for &e{arena}&a."
+  prize-added: "&aAdded prize &e#{id}&a to &e{arena}&a."
+  prize-removed: "&aRemoved prize &e#{id}&a from &e{arena}&a."
   duration-set: "&aDuration for &e{arena}&a set to &e{seconds}s&a."
   prize-points-set: "&aPrize points for &e{arena}&a set to &e{points}&a."
-  fee-set: "&aEntry fee for &e{arena}&a set to &e{fee}&a."
   reloaded: "&aConfiguration reloaded."
-  force-stopped: "&aForce-stopped the game in &e{arena}&a."
-  economy-missing: "&cNo economy provider is available for entry fees."
-  not-enough-money: "&cYou need &e{amount}&c but only have &e{balance}&c."
-  preview-spawned: "&aPreview prizes spawned for &e{arena}&a. Use &e/clawadmin unpreview {arena}&a to clear."
+  force-stopped: "&aForce-stopped &e{arena}&a."
+  preview-spawned: "&aPreview prizes for &e{arena}&a."
   preview-cleared: "&aCleared preview for &e{arena}&a."
-  waiting-partner: "&eWaiting for a second player in &e{arena}&e..."
-  moved-claw: "&7Claw moved."

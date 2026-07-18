@@ -2,8 +2,7 @@ package dev.genesi.theclaw.command;
 
 import dev.genesi.theclaw.TheClawPlugin;
 import dev.genesi.theclaw.model.Arena;
-import org.bukkit.Bukkit;
-import org.bukkit.OfflinePlayer;
+import org.bukkit.Location;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -31,7 +30,6 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
             plugin.getMessageService().send(sender, "no-permission");
             return true;
         }
-
         if (args.length == 0) {
             sendHelp(sender);
             return true;
@@ -42,25 +40,22 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
             case "help" -> sendHelp(sender);
             case "create" -> handleCreate(sender, args);
             case "delete", "remove" -> handleDelete(sender, args);
-            case "setoperator", "operator", "setjoystick" -> handleSetLocation(sender, args, "operator");
+            case "setmachine", "machine" -> handleSetLocation(sender, args, "machine");
+            case "setpad", "pad", "setcontrolpad" -> handleSetLocation(sender, args, "pad");
             case "setclaw", "claw" -> handleSetLocation(sender, args, "claw");
-            case "setlobby", "lobby" -> handleSetLocation(sender, args, "lobby");
             case "setdrop", "drop", "setchute" -> handleSetLocation(sender, args, "drop");
             case "setboundsa", "boundsa", "posa" -> handleSetLocation(sender, args, "bounds-a");
             case "setboundsb", "boundsb", "posb" -> handleSetLocation(sender, args, "bounds-b");
             case "addprize", "prize" -> handleAddPrize(sender, args);
             case "removeprize" -> handleRemovePrize(sender, args);
             case "clearprizes" -> handleClearPrizes(sender, args);
-            case "setduration", "duration" -> handleSetDuration(sender, args);
-            case "setprizepoints", "prizepoints" -> handleSetPrizePoints(sender, args);
-            case "setfee", "fee" -> handleSetFee(sender, args);
+            case "setduration", "duration" -> handleSetInt(sender, args, "duration");
+            case "setprizepoints", "prizepoints" -> handleSetInt(sender, args, "points");
             case "list" -> handleList(sender);
             case "info" -> handleInfo(sender, args);
             case "preview" -> handlePreview(sender, args, true);
             case "unpreview" -> handlePreview(sender, args, false);
             case "forcestop", "cancel" -> handleForceStop(sender, args);
-            case "points" -> handlePoints(sender, args);
-            case "redeem" -> handleRedeem(sender, args);
             case "reload" -> {
                 plugin.reloadPlugin();
                 plugin.getMessageService().send(sender, "reloaded");
@@ -82,7 +77,7 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
         }
         plugin.getArenaManager().create(name);
         plugin.getMessageService().send(sender, "arena-created", Map.of("arena", name));
-        plugin.getMessageService().sendRaw(sender, "&7Next: setoperator, setclaw, setlobby, setdrop, setboundsa, setboundsb, addprize");
+        plugin.getMessageService().sendRaw(sender, "&7Next: setmachine, setpad, setclaw, setdrop, setboundsa, setboundsb, addprize");
     }
 
     private void handleDelete(CommandSender sender, String[] args) {
@@ -90,16 +85,15 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
             plugin.getMessageService().sendRaw(sender, "&cUsage: /clawadmin delete <name>");
             return;
         }
-        String name = args[1];
-        if (plugin.getGameManager().getByArena(name).isPresent()) {
-            plugin.getMessageService().sendRaw(sender, "&cStop the active game first: /clawadmin forcestop " + name);
+        if (plugin.getGameManager().getByArena(args[1]).isPresent()) {
+            plugin.getMessageService().sendRaw(sender, "&cStop the game first: /clawadmin forcestop " + args[1]);
             return;
         }
-        if (!plugin.getArenaManager().delete(name)) {
-            plugin.getMessageService().send(sender, "arena-not-found", Map.of("arena", name));
+        if (!plugin.getArenaManager().delete(args[1])) {
+            plugin.getMessageService().send(sender, "arena-not-found", Map.of("arena", args[1]));
             return;
         }
-        plugin.getMessageService().send(sender, "arena-deleted", Map.of("arena", name.toLowerCase(Locale.ROOT)));
+        plugin.getMessageService().send(sender, "arena-deleted", Map.of("arena", args[1].toLowerCase(Locale.ROOT)));
     }
 
     private void handleSetLocation(CommandSender sender, String[] args, String type) {
@@ -117,18 +111,19 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
             return;
         }
         Arena arena = optional.get();
-        String messageKey = switch (type) {
-            case "operator" -> {
-                arena.setOperatorSpawn(player.getLocation());
-                yield "operator-spawn-set";
+        String key = switch (type) {
+            case "machine" -> {
+                arena.setMachineBlock(player.getLocation().getBlock().getLocation());
+                yield "machine-set";
+            }
+            case "pad" -> {
+                Location under = player.getLocation().clone().subtract(0, 0.2, 0).getBlock().getLocation();
+                arena.setControlPad(under);
+                yield "pad-set";
             }
             case "claw" -> {
                 arena.setClawSpawn(player.getLocation());
                 yield "claw-spawn-set";
-            }
-            case "lobby" -> {
-                arena.setLobby(player.getLocation());
-                yield "lobby-set";
             }
             case "drop" -> {
                 arena.setDropChute(player.getLocation());
@@ -144,11 +139,11 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
             }
             default -> null;
         };
-        if (messageKey == null) {
+        if (key == null) {
             return;
         }
         plugin.getArenaManager().save();
-        plugin.getMessageService().send(sender, messageKey, Map.of("arena", arena.getName()));
+        plugin.getMessageService().send(sender, key, Map.of("arena", arena.getName()));
     }
 
     private void handleAddPrize(CommandSender sender, String[] args) {
@@ -165,10 +160,9 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
             plugin.getMessageService().send(sender, "arena-not-found", Map.of("arena", args[1]));
             return;
         }
-        Arena arena = optional.get();
-        int id = arena.addPrize(player.getLocation());
+        int id = optional.get().addPrize(player.getLocation());
         plugin.getArenaManager().save();
-        plugin.getMessageService().send(sender, "prize-added", Map.of("arena", arena.getName(), "id", String.valueOf(id)));
+        plugin.getMessageService().send(sender, "prize-added", Map.of("arena", optional.get().getName(), "id", String.valueOf(id)));
     }
 
     private void handleRemovePrize(CommandSender sender, String[] args) {
@@ -185,16 +179,15 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
         try {
             id = Integer.parseInt(args[2]);
         } catch (NumberFormatException e) {
-            plugin.getMessageService().sendRaw(sender, "&cInvalid prize id.");
+            plugin.getMessageService().sendRaw(sender, "&cInvalid id.");
             return;
         }
-        Arena arena = optional.get();
-        if (!arena.removePrize(id)) {
+        if (!optional.get().removePrize(id)) {
             plugin.getMessageService().sendRaw(sender, "&cPrize id out of range.");
             return;
         }
         plugin.getArenaManager().save();
-        plugin.getMessageService().send(sender, "prize-removed", Map.of("arena", arena.getName(), "id", String.valueOf(id)));
+        plugin.getMessageService().send(sender, "prize-removed", Map.of("arena", optional.get().getName(), "id", String.valueOf(id)));
     }
 
     private void handleClearPrizes(CommandSender sender, String[] args) {
@@ -209,12 +202,12 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
         }
         optional.get().clearPrizes();
         plugin.getArenaManager().save();
-        plugin.getMessageService().sendRaw(sender, "&aCleared all prize spawns for &e" + optional.get().getName());
+        plugin.getMessageService().sendRaw(sender, "&aCleared prizes for &e" + optional.get().getName());
     }
 
-    private void handleSetDuration(CommandSender sender, String[] args) {
+    private void handleSetInt(CommandSender sender, String[] args, String type) {
         if (args.length < 3) {
-            plugin.getMessageService().sendRaw(sender, "&cUsage: /clawadmin setduration <arena> <seconds>");
+            plugin.getMessageService().sendRaw(sender, "&cUsage: /clawadmin " + args[0] + " <arena> <value>");
             return;
         }
         Optional<Arena> optional = plugin.getArenaManager().get(args[1]);
@@ -222,85 +215,37 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
             plugin.getMessageService().send(sender, "arena-not-found", Map.of("arena", args[1]));
             return;
         }
-        int seconds;
+        int value;
         try {
-            seconds = Integer.parseInt(args[2]);
+            value = Integer.parseInt(args[2]);
         } catch (NumberFormatException e) {
             plugin.getMessageService().sendRaw(sender, "&cInvalid number.");
             return;
         }
-        optional.get().setDurationOverride(Math.max(10, seconds));
+        if (type.equals("duration")) {
+            optional.get().setDurationOverride(Math.max(5, value));
+            plugin.getMessageService().send(sender, "duration-set", Map.of(
+                    "arena", optional.get().getName(),
+                    "seconds", String.valueOf(Math.max(5, value))
+            ));
+        } else {
+            optional.get().setPrizePointsOverride(Math.max(0, value));
+            plugin.getMessageService().send(sender, "prize-points-set", Map.of(
+                    "arena", optional.get().getName(),
+                    "points", String.valueOf(Math.max(0, value))
+            ));
+        }
         plugin.getArenaManager().save();
-        plugin.getMessageService().send(sender, "duration-set", Map.of(
-                "arena", optional.get().getName(),
-                "seconds", String.valueOf(Math.max(10, seconds))
-        ));
-    }
-
-    private void handleSetPrizePoints(CommandSender sender, String[] args) {
-        if (args.length < 3) {
-            plugin.getMessageService().sendRaw(sender, "&cUsage: /clawadmin setprizepoints <arena> <points>");
-            return;
-        }
-        Optional<Arena> optional = plugin.getArenaManager().get(args[1]);
-        if (optional.isEmpty()) {
-            plugin.getMessageService().send(sender, "arena-not-found", Map.of("arena", args[1]));
-            return;
-        }
-        int points;
-        try {
-            points = Integer.parseInt(args[2]);
-        } catch (NumberFormatException e) {
-            plugin.getMessageService().sendRaw(sender, "&cInvalid number.");
-            return;
-        }
-        optional.get().setPrizePointsOverride(Math.max(0, points));
-        plugin.getArenaManager().save();
-        plugin.getMessageService().send(sender, "prize-points-set", Map.of(
-                "arena", optional.get().getName(),
-                "points", String.valueOf(Math.max(0, points))
-        ));
-    }
-
-    private void handleSetFee(CommandSender sender, String[] args) {
-        if (args.length < 3) {
-            plugin.getMessageService().sendRaw(sender, "&cUsage: /clawadmin setfee <arena> <amount>");
-            return;
-        }
-        Optional<Arena> optional = plugin.getArenaManager().get(args[1]);
-        if (optional.isEmpty()) {
-            plugin.getMessageService().send(sender, "arena-not-found", Map.of("arena", args[1]));
-            return;
-        }
-        double fee;
-        try {
-            fee = Double.parseDouble(args[2]);
-        } catch (NumberFormatException e) {
-            plugin.getMessageService().sendRaw(sender, "&cInvalid amount.");
-            return;
-        }
-        if (fee < 0) {
-            plugin.getMessageService().sendRaw(sender, "&cFee cannot be negative.");
-            return;
-        }
-        optional.get().setEntryFeeOverride(fee);
-        plugin.getArenaManager().save();
-        plugin.getMessageService().send(sender, "fee-set", Map.of(
-                "arena", optional.get().getName(),
-                "fee", plugin.getEconomyService().format(fee)
-        ));
     }
 
     private void handleList(CommandSender sender) {
-        var arenas = plugin.getArenaManager().getArenas();
-        if (arenas.isEmpty()) {
+        if (plugin.getArenaManager().getArenas().isEmpty()) {
             plugin.getMessageService().sendRaw(sender, "&eNo arenas.");
             return;
         }
-        for (Arena arena : arenas) {
+        for (Arena arena : plugin.getArenaManager().getArenas()) {
             plugin.getMessageService().sendRaw(sender, "&8- &f" + arena.getName()
-                    + (arena.isReady() ? " &aready" : " &cincomplete")
-                    + " &7prizes:" + arena.getPrizes().size());
+                    + (arena.isReady() ? " &aready" : " &cincomplete"));
         }
     }
 
@@ -317,18 +262,17 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
         Arena arena = optional.get();
         plugin.getMessageService().sendRaw(sender, "&dArena &f" + arena.getName());
         plugin.getMessageService().sendRaw(sender, "&7Ready: " + (arena.isReady() ? "&ayes" : "&cno"));
-        plugin.getMessageService().sendRaw(sender, "&7Operator: " + loc(arena.getOperatorSpawn()));
+        plugin.getMessageService().sendRaw(sender, "&7Machine: " + loc(arena.getMachineBlock()));
+        plugin.getMessageService().sendRaw(sender, "&7Pad: " + loc(arena.getControlPad()));
         plugin.getMessageService().sendRaw(sender, "&7Claw: " + loc(arena.getClawSpawn()));
-        plugin.getMessageService().sendRaw(sender, "&7Lobby: " + loc(arena.getLobby()));
         plugin.getMessageService().sendRaw(sender, "&7Drop: " + loc(arena.getDropChute()));
-        plugin.getMessageService().sendRaw(sender, "&7Bounds A: " + loc(arena.getBoundsA()));
-        plugin.getMessageService().sendRaw(sender, "&7Bounds B: " + loc(arena.getBoundsB()));
+        plugin.getMessageService().sendRaw(sender, "&7Bounds A/B: " + loc(arena.getBoundsA()) + " &7/ " + loc(arena.getBoundsB()));
         plugin.getMessageService().sendRaw(sender, "&7Prizes: &f" + arena.getPrizes().size());
     }
 
     private void handlePreview(CommandSender sender, String[] args, boolean enable) {
         if (args.length < 2) {
-            plugin.getMessageService().sendRaw(sender, "&cUsage: /clawadmin " + (enable ? "preview" : "unpreview") + " <arena>");
+            plugin.getMessageService().sendRaw(sender, "&cUsage: /clawadmin preview|unpreview <arena>");
             return;
         }
         Optional<Arena> optional = plugin.getArenaManager().get(args[1]);
@@ -356,112 +300,30 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
             return;
         }
         if (plugin.getGameManager().getByArena(arena.get().getName()).isEmpty()) {
-            plugin.getMessageService().sendRaw(sender, "&cNo active game in that arena.");
+            plugin.getMessageService().sendRaw(sender, "&cNo active game.");
             return;
         }
         plugin.getGameManager().forceStop(arena.get());
         plugin.getMessageService().send(sender, "force-stopped", Map.of("arena", arena.get().getName()));
     }
 
-    private void handlePoints(CommandSender sender, String[] args) {
-        if (args.length < 3) {
-            plugin.getMessageService().sendRaw(sender, "&cUsage: /clawadmin points <player> <get|set|add|remove> [amount]");
-            return;
-        }
-        OfflinePlayer target = Bukkit.getOfflinePlayer(args[1]);
-        String action = args[2].toLowerCase(Locale.ROOT);
-        if (action.equals("get")) {
-            plugin.getMessageService().send(sender, "points-other", Map.of(
-                    "player", args[1],
-                    "points", String.valueOf(plugin.getPointsService().getPoints(target))
-            ));
-            return;
-        }
-        if (args.length < 4) {
-            plugin.getMessageService().sendRaw(sender, "&cSpecify an amount.");
-            return;
-        }
-        int amount;
-        try {
-            amount = Integer.parseInt(args[3]);
-        } catch (NumberFormatException e) {
-            plugin.getMessageService().sendRaw(sender, "&cInvalid amount.");
-            return;
-        }
-        int balance = switch (action) {
-            case "set" -> {
-                plugin.getPointsService().setPoints(target, amount);
-                yield plugin.getPointsService().getPoints(target);
-            }
-            case "add" -> plugin.getPointsService().addPoints(target, amount);
-            case "remove" -> {
-                plugin.getPointsService().removePoints(target, amount);
-                yield plugin.getPointsService().getPoints(target);
-            }
-            default -> -1;
-        };
-        if (balance < 0) {
-            plugin.getMessageService().sendRaw(sender, "&cUse get, set, add, or remove.");
-            return;
-        }
-        String key = switch (action) {
-            case "set" -> "points-set";
-            case "add" -> "points-added";
-            default -> "points-removed";
-        };
-        plugin.getMessageService().send(sender, key, Map.of(
-                "player", args[1],
-                "amount", String.valueOf(amount),
-                "points", String.valueOf(balance)
-        ));
-    }
-
-    private void handleRedeem(CommandSender sender, String[] args) {
-        if (args.length < 3) {
-            plugin.getMessageService().sendRaw(sender, "&cUsage: /clawadmin redeem <player> <amount>");
-            return;
-        }
-        OfflinePlayer target = Bukkit.getOfflinePlayer(args[1]);
-        int amount;
-        try {
-            amount = Integer.parseInt(args[2]);
-        } catch (NumberFormatException e) {
-            plugin.getMessageService().sendRaw(sender, "&cInvalid amount.");
-            return;
-        }
-        if (!plugin.getPointsService().removePoints(target, amount)) {
-            plugin.getMessageService().send(sender, "not-enough-points", Map.of(
-                    "player", args[1],
-                    "points", String.valueOf(plugin.getPointsService().getPoints(target))
-            ));
-            return;
-        }
-        plugin.getMessageService().send(sender, "redeem-success", Map.of(
-                "player", args[1],
-                "amount", String.valueOf(amount),
-                "points", String.valueOf(plugin.getPointsService().getPoints(target))
-        ));
-    }
-
     private String loc(org.bukkit.Location location) {
         if (location == null || location.getWorld() == null) {
             return "&cunset";
         }
-        return "&a" + location.getWorld().getName()
-                + " " + String.format("%.1f, %.1f, %.1f", location.getX(), location.getY(), location.getZ());
+        return "&a" + location.getWorld().getName() + " "
+                + String.format("%d,%d,%d", location.getBlockX(), location.getBlockY(), location.getBlockZ());
     }
 
     private void sendHelp(CommandSender sender) {
         plugin.getMessageService().sendRaw(sender, "&dTheClaw admin:");
         plugin.getMessageService().sendRaw(sender, "&e/clawadmin create|delete <name>");
-        plugin.getMessageService().sendRaw(sender, "&e/clawadmin setoperator|setclaw|setlobby|setdrop <arena>");
+        plugin.getMessageService().sendRaw(sender, "&e/clawadmin setmachine <arena> &7- clickable join block");
+        plugin.getMessageService().sendRaw(sender, "&e/clawadmin setpad <arena> &7- stand here to signal");
+        plugin.getMessageService().sendRaw(sender, "&e/clawadmin setclaw|setdrop <arena>");
         plugin.getMessageService().sendRaw(sender, "&e/clawadmin setboundsa|setboundsb <arena>");
-        plugin.getMessageService().sendRaw(sender, "&e/clawadmin addprize|removeprize|clearprizes <arena> [id]");
-        plugin.getMessageService().sendRaw(sender, "&e/clawadmin setduration|setprizepoints|setfee <arena> <value>");
-        plugin.getMessageService().sendRaw(sender, "&e/clawadmin preview|unpreview|forcestop <arena>");
-        plugin.getMessageService().sendRaw(sender, "&e/clawadmin points <player> <get|set|add|remove> [amount]");
-        plugin.getMessageService().sendRaw(sender, "&e/clawadmin redeem <player> <amount>");
-        plugin.getMessageService().sendRaw(sender, "&e/clawadmin list|info <arena>|reload");
+        plugin.getMessageService().sendRaw(sender, "&e/clawadmin addprize <arena>");
+        plugin.getMessageService().sendRaw(sender, "&e/clawadmin preview|forcestop|info|reload");
     }
 
     @Override
@@ -471,22 +333,14 @@ public final class ClawAdminCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length == 1) {
             return filter(Arrays.asList(
-                    "create", "delete", "setoperator", "setclaw", "setlobby", "setdrop",
+                    "create", "delete", "setmachine", "setpad", "setclaw", "setdrop",
                     "setboundsa", "setboundsb", "addprize", "removeprize", "clearprizes",
-                    "setduration", "setprizepoints", "setfee", "list", "info",
-                    "preview", "unpreview", "forcestop", "points", "redeem", "reload", "help"
+                    "setduration", "setprizepoints", "list", "info", "preview", "unpreview",
+                    "forcestop", "reload", "help"
             ), args[0]);
         }
         if (args.length == 2) {
-            String sub = args[0].toLowerCase(Locale.ROOT);
-            if (List.of("delete", "setoperator", "setclaw", "setlobby", "setdrop", "setboundsa", "setboundsb",
-                    "addprize", "removeprize", "clearprizes", "setduration", "setprizepoints", "setfee",
-                    "info", "preview", "unpreview", "forcestop", "operator", "claw", "lobby", "drop").contains(sub)) {
-                return filter(arenaNames(), args[1]);
-            }
-        }
-        if (args.length == 3 && args[0].equalsIgnoreCase("points")) {
-            return filter(Arrays.asList("get", "set", "add", "remove"), args[2]);
+            return filter(arenaNames(), args[1]);
         }
         return List.of();
     }
